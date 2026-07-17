@@ -433,6 +433,7 @@ fn decode_stored_node((id, parent_id, position, text): RawNode) -> Result<Stored
         node: Node {
             id: decode_id(id)?,
             parent_id: parent_id.map(decode_id).transpose()?,
+            has_children: false,
             text,
             tags: Vec::new(),
             references: Vec::new(),

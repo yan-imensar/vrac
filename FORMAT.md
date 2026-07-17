@@ -28,7 +28,9 @@ The canonical product tables are:
 Node identifiers are opaque 16-byte values. `parent_id = NULL` represents a
 root-level node; the product root is virtual and is not stored. Siblings are
 ordered deterministically by `(position, id)`, while numeric positions remain
-private storage details.
+private storage details. Normal node reads also return whether a node currently
+has children. This value is derived through the parent index and is not stored
+or synchronized.
 
 Tags are unordered properties stored without a visual `#`. The engine trims
 them, converts them to Unicode lowercase, rejects empty values, whitespace and

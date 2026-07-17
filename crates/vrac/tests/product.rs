@@ -326,7 +326,10 @@ fn paths_are_root_first_persisted_and_cycle_safe() {
     );
     assert_eq!(
         engine.path(root.id).expect("read root path"),
-        std::slice::from_ref(&root)
+        [Node {
+            has_children: true,
+            ..root.clone()
+        }]
     );
     assert!(matches!(
         engine.path(NodeId::from_bytes([99; 16])),
@@ -371,6 +374,37 @@ fn paths_handle_substantial_depth_without_one_query_per_parent() {
         path.iter().map(|node| node.id).collect::<Vec<_>>(),
         expected
     );
+}
+
+#[test]
+fn node_reads_include_current_child_presence() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let root = create(&mut engine, "Root");
+    assert!(!root.has_children);
+
+    let mut child_input = CreateNode::new("Child");
+    child_input.parent_id = Some(root.id);
+    let child = engine.create_node(child_input).expect("create child");
+    let mut leaf_input = CreateNode::new("Leaf");
+    leaf_input.parent_id = Some(child.id);
+    let leaf = engine.create_node(leaf_input).expect("create leaf");
+
+    assert!(engine.node(root.id).unwrap().unwrap().has_children);
+    assert!(engine.children(None, Page::default()).unwrap().nodes[0].has_children);
+    assert!(engine.node(child.id).unwrap().unwrap().has_children);
+    assert!(!engine.node(leaf.id).unwrap().unwrap().has_children);
+    assert_eq!(
+        engine
+            .path(leaf.id)
+            .unwrap()
+            .iter()
+            .map(|node| node.has_children)
+            .collect::<Vec<_>>(),
+        [true, true, false]
+    );
+
+    engine.delete_node(leaf.id).expect("delete leaf");
+    assert!(!engine.node(child.id).unwrap().unwrap().has_children);
 }
 
 #[test]
@@ -468,6 +502,10 @@ fn metadata_queries_use_their_dedicated_indexes() {
             "SELECT source_id, start_byte FROM node_references
              WHERE target_id = ?1 ORDER BY source_id, start_byte",
             "node_references_by_target",
+        ),
+        (
+            "SELECT parent_id FROM nodes WHERE parent_id IN (?1) GROUP BY parent_id",
+            "nodes_by_parent",
         ),
     ];
 

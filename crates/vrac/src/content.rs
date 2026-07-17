@@ -296,9 +296,20 @@ fn hydrate_metadata(
          FROM node_references AS links
          LEFT JOIN nodes AS targets ON targets.id = links.target_id
          WHERE links.source_id IN ({parameters})
+         UNION ALL
+         SELECT children.parent_id AS owner_id, 2 AS kind,
+                0 AS start_byte, 0 AS end_byte,
+                NULL AS target_id, NULL AS value
+         FROM nodes AS children
+         WHERE children.parent_id IN ({parameters})
+         GROUP BY children.parent_id
          ORDER BY owner_id, kind, start_byte, value"
     );
-    let parameters = node_ids.iter().chain(node_ids).map(node_id_bytes);
+    let parameters = node_ids
+        .iter()
+        .chain(node_ids)
+        .chain(node_ids)
+        .map(node_id_bytes);
     let mut metadata = connection.prepare_cached(&metadata_sql)?;
     let mut rows = metadata.query(params_from_iter(parameters))?;
     while let Some(row) = rows.next()? {
@@ -307,6 +318,10 @@ fn hydrate_metadata(
             Error::InvalidDatabase("metadata belongs to an unexpected node".into())
         })?;
         let kind: i64 = row.get(1)?;
+        if kind == 2 {
+            nodes[index].has_children = true;
+            continue;
+        }
         if kind == 0 {
             nodes[index].tags.push(row.get(5)?);
             continue;

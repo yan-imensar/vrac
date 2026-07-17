@@ -63,7 +63,13 @@ fn a_node_can_be_read_after_reopening_the_database() {
     drop(engine);
 
     let engine = Engine::open(database.path()).expect("reopen database");
-    assert_eq!(engine.node(root.id).expect("read root"), Some(root.clone()));
+    assert_eq!(
+        engine.node(root.id).expect("read root"),
+        Some(Node {
+            has_children: true,
+            ..root.clone()
+        })
+    );
     assert_eq!(
         engine.node(child.id).expect("read child"),
         Some(Node {

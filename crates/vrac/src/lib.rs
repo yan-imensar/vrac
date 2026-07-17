@@ -191,6 +191,8 @@ pub struct Node {
     pub id: NodeId,
     /// Parent identity, or `None` for a root node.
     pub parent_id: Option<NodeId>,
+    /// Whether the node currently has at least one child.
+    pub has_children: bool,
     /// Plain text stored by the node.
     pub text: String,
     /// Canonical tags in deterministic lexical order.
