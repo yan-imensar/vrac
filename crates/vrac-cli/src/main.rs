@@ -313,6 +313,9 @@ fn command_check(arguments: &[String]) -> Result<ExitCode, CliError> {
             } => {
                 println!("invalid-reference\t{source_id}\t{start}\t{end}");
             }
+            CheckIssue::InvalidSyncState(reason) => {
+                println!("invalid-sync-state\t{}", escape_text(&reason));
+            }
             CheckIssue::AdditionalIssuesOmitted => println!("issues-omitted"),
         }
     }

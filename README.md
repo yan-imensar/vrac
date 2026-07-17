@@ -80,9 +80,23 @@ Linux, and the Storage Access Framework on Android.
 
 Packages are idempotent and ordered per device. Independent changes merge;
 true conflicts abort atomically and remain available instead of silently using
-last-writer-wins. There is no server, account system, CRDT, or permanent event
-history. Provider scheduling and conflict presentation belong to future user
-interfaces, not to the engine.
+last-writer-wins. A package that causally depends on another device is reported
+separately so the provider adapter can apply other packages and retry it.
+Reopening an active synchronized workspace with `Engine::open` resumes its
+existing capture identity; supplying a different identity is rejected. This
+prevents an ordinary application restart from silently producing
+unsynchronized edits. There is no server, account system, CRDT, or permanent
+event history. Provider scheduling and conflict presentation belong to future
+user interfaces, not to the engine.
+
+## Graphical client boundary
+
+The engine is synchronous and can be moved to the graphical client's dedicated
+worker thread, keeping SQLite work off the UI thread without an async runtime in
+the library. Nodes and identifiers remain engine types; a thin Tauri adapter
+only converts command inputs and outputs. `Cursor` implements text conversion
+as an opaque token that can cross IPC unchanged and be parsed for the next page.
+The token is temporary continuation state, not workspace data.
 
 ## CLI
 
@@ -119,8 +133,8 @@ Public error categories cover SQLite failures, invalid or unsupported
 workspaces, missing nodes or parents, invalid relative placement, cycles,
 pagination limits, invalid tags or references, and performance-data generation
 limits. Synchronization errors distinguish malformed, foreign, out-of-order,
-and conflicting packages. Checkpoint errors distinguish an existing
-destination, failed integrity validation, and filesystem failures.
+causally blocked, and conflicting packages. Checkpoint errors distinguish an
+existing destination, failed integrity validation, and filesystem failures.
 
 The CLI writes node data and successful command results to standard output and
 diagnostics to standard error. Its exit codes are:

@@ -76,8 +76,10 @@ device is known only as a remote source.
 
 Every product mutation captured in synchronized mode inserts one SQLite
 changeset into `sync_outbox` in the same transaction. A mutation cannot commit
-without its outbox row. Opening the same workspace without synchronization does
-not create outbox rows.
+without its outbox row. A fresh workspace opened without a device identity is
+unsynchronized. Once a local device is active, ordinary reopening resumes that
+identity so capture cannot be disabled accidentally. Explicitly requesting a
+different local identity is rejected.
 
 All outbox rows waiting when synchronization runs are combined into one
 immutable provider package. Changes committed after its preparation form the
@@ -117,6 +119,12 @@ SQLite changeset conflict aborts the complete package. The engine also rejects
 a merge that would create a tree cycle or invalid overlapping references, even
 when both devices' local transactions were independently valid. No last-writer
 wins rule silently discards content.
+
+A package may causally depend on a change received earlier from another device.
+If that dependency is absent, the engine leaves the package unapplied and
+reports a missing dependency rather than a content conflict. A provider adapter
+continues with other packages and retries deferred packages after making
+progress. Three-device tests cover this out-of-order arrival.
 
 There is no CRDT, server account, transport abstraction, collaboration model,
 or unbounded operation log in v3.

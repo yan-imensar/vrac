@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 use vrac::{
-    CheckIssue, CreateNode, Destination, Engine, Error, GenerateShape, Node, NodeId, Page,
+    CheckIssue, CreateNode, Cursor, Destination, Engine, Error, GenerateShape, Node, NodeId, Page,
     Placement,
 };
 
@@ -205,12 +205,18 @@ fn relative_placement_and_cursor_pagination_preserve_exact_order() {
         )
         .expect("read first page");
     assert!(first_page.next.is_some());
+    let cursor: Cursor = first_page
+        .next
+        .expect("first cursor")
+        .to_string()
+        .parse()
+        .expect("parse opaque cursor");
     let second_page = engine
         .children(
             None,
             Page {
                 limit: 2,
-                after: first_page.next,
+                after: Some(cursor),
             },
         )
         .expect("read second page");
@@ -233,6 +239,19 @@ fn relative_placement_and_cursor_pagination_preserve_exact_order() {
         .chain(third_page.nodes)
         .collect();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn malformed_textual_cursors_are_rejected() {
+    for value in [
+        "",
+        "v2:0000000000000000:00000000000000000000000000000000",
+        "v1:0:00000000000000000000000000000000",
+        "v1:0000000000000000:not-an-id",
+        "v1:0000000000000000:00000000000000000000000000000000:extra",
+    ] {
+        assert!(value.parse::<Cursor>().is_err(), "accepted {value:?}");
+    }
 }
 
 #[test]

@@ -38,20 +38,22 @@ impl Engine {
     /// Opens a workspace and captures subsequent product mutations for sync.
     ///
     /// `device_id` identifies this application installation and must be
-    /// retained locally by the client. Opening without it keeps synchronization
-    /// completely inactive and creates no pending changes.
+    /// retained locally by the client. [`Engine::open`] keeps fresh workspaces
+    /// unsynchronized and automatically resumes capture in a workspace that
+    /// was previously opened with this method.
     pub fn open_synced(path: impl AsRef<Path>, device_id: SyncDeviceId) -> Result<Self> {
         Self::open_internal(path, Some(device_id))
     }
 
-    fn open_internal(path: impl AsRef<Path>, sync_device_id: Option<SyncDeviceId>) -> Result<Self> {
+    fn open_internal(
+        path: impl AsRef<Path>,
+        requested_device: Option<SyncDeviceId>,
+    ) -> Result<Self> {
         let mut connection = Connection::open(path)?;
         enable_foreign_keys(&connection)?;
         prepare_database(&mut connection)?;
         configure_persistence(&connection)?;
-        if let Some(device_id) = sync_device_id {
-            crate::sync::register_device(&mut connection, device_id)?;
-        }
+        let sync_device_id = crate::sync::resolve_device(&mut connection, requested_device)?;
 
         Ok(Self {
             connection,
@@ -59,7 +61,8 @@ impl Engine {
         })
     }
 
-    /// Checks SQLite integrity, foreign keys, and root reachability.
+    /// Checks SQLite integrity, foreign keys, content, synchronization state,
+    /// and root reachability.
     ///
     /// This operation traverses the complete workspace and is intentionally
     /// more expensive than normal reads and mutations.
@@ -104,6 +107,19 @@ impl Engine {
                     .iter()
                     .any(|issue| matches!(issue, CheckIssue::AdditionalIssuesOmitted))
             {
+                issues.push(CheckIssue::AdditionalIssuesOmitted);
+            }
+        }
+
+        if issues.len() <= MAX_REPORTED_ISSUES
+            && !issues
+                .iter()
+                .any(|issue| matches!(issue, CheckIssue::AdditionalIssuesOmitted))
+        {
+            let remaining = MAX_REPORTED_ISSUES.saturating_sub(issues.len());
+            let (sync_issues, omitted) = crate::sync::check_sync(&self.connection, remaining)?;
+            issues.extend(sync_issues);
+            if omitted {
                 issues.push(CheckIssue::AdditionalIssuesOmitted);
             }
         }
@@ -200,6 +216,12 @@ mod tests {
         assert_eq!(journal_mode, "memory");
         assert_eq!(synchronous, 2);
         assert_eq!(application_id, APPLICATION_ID);
+    }
+
+    #[test]
+    fn engine_can_be_owned_by_a_client_worker_thread() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Engine>();
     }
 
     #[test]

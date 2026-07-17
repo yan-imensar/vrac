@@ -2,9 +2,11 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use rusqlite::{Connection, params};
 use tempfile::tempdir;
 use vrac::{
-    CreateNode, Destination, Engine, Error, Placement, ReferenceInput, SyncApply, SyncDeviceId,
+    CheckIssue, CreateNode, Destination, Engine, Error, Placement, ReferenceInput, SyncApply,
+    SyncDeviceId,
 };
 
 fn device(byte: u8) -> SyncDeviceId {
@@ -117,6 +119,58 @@ fn two_devices_exchange_complete_idempotent_product_changes() {
 }
 
 #[test]
+fn reopening_a_synchronized_workspace_cannot_silently_disable_capture() {
+    let directory = tempdir().expect("create temporary directory");
+    let path = directory.path().join("workspace.vrac");
+    let receiver_path = directory.path().join("receiver.vrac");
+    let mut engine = Engine::open_synced(&path, device(1)).unwrap();
+    engine.checkpoint(&receiver_path).unwrap();
+    let node = engine
+        .create_node(CreateNode::new("Before reopen"))
+        .unwrap();
+    drop(engine);
+
+    let mut engine = Engine::open(&path).unwrap();
+    engine.set_text(node.id, "After reopen".into()).unwrap();
+    let package = flush(&mut engine);
+    let mut receiver = Engine::open_synced(&receiver_path, device(2)).unwrap();
+    assert_eq!(
+        receiver.apply_sync_package(&package).unwrap(),
+        SyncApply::Applied
+    );
+    assert_eq!(
+        receiver.node(node.id).unwrap().unwrap().text,
+        "After reopen"
+    );
+}
+
+#[test]
+fn a_fresh_workspace_remains_unsynchronized_until_a_device_is_supplied() {
+    let directory = tempdir().expect("create temporary directory");
+    let path = directory.path().join("workspace.vrac");
+    let mut engine = Engine::open(&path).unwrap();
+    engine.create_node(CreateNode::new("Local only")).unwrap();
+
+    assert!(matches!(
+        engine.next_sync_package(),
+        Err(Error::SyncNotEnabled)
+    ));
+}
+
+#[test]
+fn an_active_workspace_rejects_another_local_device_identity() {
+    let directory = tempdir().expect("create temporary directory");
+    let path = directory.path().join("workspace.vrac");
+    drop(Engine::open_synced(&path, device(1)).unwrap());
+
+    assert!(matches!(
+        Engine::open_synced(&path, device(2)),
+        Err(Error::SyncDeviceMismatch { active, requested })
+            if active == device(1) && requested == device(2)
+    ));
+}
+
+#[test]
 fn packages_are_ordered_validated_and_workspace_scoped() {
     let directory = tempdir().expect("create temporary directory");
     let first_path = directory.path().join("first.vrac");
@@ -151,6 +205,97 @@ fn packages_are_ordered_validated_and_workspace_scoped() {
         other.apply_sync_package(&one),
         Err(Error::SyncWorkspaceMismatch)
     ));
+}
+
+#[test]
+fn complete_check_validates_sync_frontiers_and_prepared_packages() {
+    let directory = tempdir().expect("create temporary directory");
+    let frontier_path = directory.path().join("frontier.vrac");
+    let mut engine = Engine::open_synced(&frontier_path, device(1)).unwrap();
+    engine.create_node(CreateNode::new("Pending")).unwrap();
+    drop(engine);
+    let connection = Connection::open(&frontier_path).unwrap();
+    connection
+        .execute(
+            "UPDATE sync_devices SET next_sequence = next_sequence + 1",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    let report = Engine::open(&frontier_path).unwrap().check().unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| matches!(issue, CheckIssue::InvalidSyncState(_)))
+    );
+
+    let package_path = directory.path().join("package.vrac");
+    let mut engine = Engine::open_synced(&package_path, device(2)).unwrap();
+    engine.create_node(CreateNode::new("Prepared")).unwrap();
+    engine.next_sync_package().unwrap().unwrap();
+    drop(engine);
+    let connection = Connection::open(&package_path).unwrap();
+    let mut bytes: Vec<u8> = connection
+        .query_row("SELECT bytes FROM sync_batch", [], |row| row.get(0))
+        .unwrap();
+    bytes[20] ^= 1;
+    connection
+        .execute("UPDATE sync_batch SET bytes = ?1", params![bytes])
+        .unwrap();
+    drop(connection);
+    let report = Engine::open(&package_path).unwrap().check().unwrap();
+    assert!(
+        report
+            .issues
+            .iter()
+            .any(|issue| matches!(issue, CheckIssue::InvalidSyncState(_)))
+    );
+}
+
+#[test]
+fn a_cross_device_dependency_is_deferred_and_can_be_retried() {
+    let directory = tempdir().expect("create temporary directory");
+    let first_path = directory.path().join("first.vrac");
+    let second_path = directory.path().join("second.vrac");
+    let third_path = directory.path().join("third.vrac");
+    let checkpoint_path = directory.path().join("checkpoint.vrac");
+    let mut first = Engine::open_synced(&first_path, device(1)).unwrap();
+    let root = first.create_node(CreateNode::new("Root")).unwrap();
+    flush(&mut first);
+    first.checkpoint(&checkpoint_path).unwrap();
+    std::fs::copy(&checkpoint_path, &second_path).unwrap();
+    std::fs::copy(&checkpoint_path, &third_path).unwrap();
+    let mut second = Engine::open_synced(&second_path, device(2)).unwrap();
+    let mut third = Engine::open_synced(&third_path, device(3)).unwrap();
+
+    let mut input = CreateNode::new("Created on B");
+    input.parent_id = Some(root.id);
+    let dependent = second.create_node(input).unwrap();
+    let from_second = flush(&mut second);
+    assert_eq!(
+        first.apply_sync_package(&from_second).unwrap(),
+        SyncApply::Applied
+    );
+    first.set_text(dependent.id, "Edited on A".into()).unwrap();
+    let from_first = flush(&mut first);
+
+    assert!(matches!(
+        third.apply_sync_package(&from_first),
+        Err(Error::SyncDependencyMissing { .. })
+    ));
+    assert_eq!(
+        third.apply_sync_package(&from_second).unwrap(),
+        SyncApply::Applied
+    );
+    assert_eq!(
+        third.apply_sync_package(&from_first).unwrap(),
+        SyncApply::Applied
+    );
+    assert_eq!(
+        third.node(dependent.id).unwrap().unwrap().text,
+        "Edited on A"
+    );
 }
 
 #[test]

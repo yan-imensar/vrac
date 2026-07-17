@@ -279,9 +279,8 @@ pub enum Placement {
 
 /// Opaque cursor returned by a paginated read.
 ///
-/// Cursors are continuation state, not a persistent or exchange format. A
-/// client may retain one while loading a sibling list but cannot inspect or
-/// construct it.
+/// Cursors are continuation state, not a persistent storage format. Clients
+/// may pass their textual representation unchanged across an IPC boundary.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Cursor {
     position: i64,
@@ -293,6 +292,51 @@ impl fmt::Debug for Cursor {
         formatter.write_str("Cursor(..)")
     }
 }
+
+impl fmt::Display for Cursor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let position = u64::from_be_bytes(self.position.to_be_bytes());
+        write!(formatter, "v1:{position:016x}:{}", self.id)
+    }
+}
+
+impl FromStr for Cursor {
+    type Err = ParseCursorError;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        let mut parts = value.split(':');
+        let version = parts.next();
+        let position = parts.next();
+        let id = parts.next();
+        if version != Some("v1") || parts.next().is_some() {
+            return Err(ParseCursorError);
+        }
+        let position = position
+            .filter(|value| value.len() == 16)
+            .and_then(|value| u64::from_str_radix(value, 16).ok())
+            .ok_or(ParseCursorError)?;
+        let id = id
+            .ok_or(ParseCursorError)?
+            .parse()
+            .map_err(|_| ParseCursorError)?;
+        Ok(Self {
+            position: i64::from_be_bytes(position.to_be_bytes()),
+            id,
+        })
+    }
+}
+
+/// Error returned when parsing a textual pagination cursor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParseCursorError;
+
+impl fmt::Display for ParseCursorError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("invalid pagination cursor")
+    }
+}
+
+impl StdError for ParseCursorError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 /// Request for one bounded page of children.
@@ -382,6 +426,8 @@ pub enum CheckIssue {
         /// Stored exclusive end byte.
         end: i64,
     },
+    /// Synchronization metadata or pending changes are inconsistent.
+    InvalidSyncState(String),
     /// Marker indicating that additional issues were not included in the report.
     AdditionalIssuesOmitted,
 }
@@ -442,6 +488,13 @@ pub enum Error {
     InvalidCheckpoint(CheckReport),
     /// Synchronization was requested on an engine opened without a device ID.
     SyncNotEnabled,
+    /// A synchronized workspace is already active under another device ID.
+    SyncDeviceMismatch {
+        /// Device currently capturing mutations in this workspace file.
+        active: SyncDeviceId,
+        /// Device requested by the client.
+        requested: SyncDeviceId,
+    },
     /// A synchronization package is malformed or corrupted.
     InvalidSyncPackage(String),
     /// A package belongs to another workspace.
@@ -454,6 +507,15 @@ pub enum Error {
         expected: u64,
         /// First sequence in the received package.
         received: u64,
+    },
+    /// A package depends on a package from another device not yet applied.
+    SyncDependencyMissing {
+        /// Device that produced the deferred package.
+        device_id: SyncDeviceId,
+        /// First transaction in the deferred package.
+        first_sequence: u64,
+        /// Last transaction in the deferred package.
+        last_sequence: u64,
     },
     /// Applying a package would overwrite a concurrent local change.
     SyncConflict {
@@ -533,6 +595,10 @@ impl fmt::Display for Error {
             Self::SyncNotEnabled => formatter.write_str(
                 "synchronization requires opening the workspace with a device identifier",
             ),
+            Self::SyncDeviceMismatch { active, requested } => write!(
+                formatter,
+                "workspace synchronization is active for device {active}, not {requested}"
+            ),
             Self::InvalidSyncPackage(reason) => {
                 write!(formatter, "invalid synchronization package: {reason}")
             }
@@ -546,6 +612,14 @@ impl fmt::Display for Error {
             } => write!(
                 formatter,
                 "synchronization package from {device_id} starts at {received}, expected {expected}"
+            ),
+            Self::SyncDependencyMissing {
+                device_id,
+                first_sequence,
+                last_sequence,
+            } => write!(
+                formatter,
+                "synchronization package {first_sequence}..={last_sequence} from {device_id} depends on changes not yet applied"
             ),
             Self::SyncConflict {
                 device_id,

@@ -1,15 +1,17 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use fallible_streaming_iterator::FallibleStreamingIterator;
-use rusqlite::session::{Changegroup, ChangesetIter, ConflictAction, Session};
+use rusqlite::session::{Changegroup, ChangesetIter, ConflictAction, ConflictType, Session};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::content::reference_range_is_valid;
 use crate::db::Engine;
 use crate::nodes::{decode_id, node_id_bytes};
-use crate::{Error, OutgoingSyncPackage, Result, SYNC_DEVICE_ID_LENGTH, SyncApply, SyncDeviceId};
+use crate::{
+    CheckIssue, Error, OutgoingSyncPackage, Result, SYNC_DEVICE_ID_LENGTH, SyncApply, SyncDeviceId,
+};
 
 const PACKAGE_MAGIC: &[u8; 8] = b"VRACSYNC";
 const PACKAGE_VERSION: u8 = 1;
@@ -26,7 +28,47 @@ struct ParsedPackage<'a> {
     payload: &'a [u8],
 }
 
-pub(crate) fn register_device(connection: &mut Connection, device_id: SyncDeviceId) -> Result<()> {
+struct DeviceState {
+    next: Option<u64>,
+    applied: u64,
+    outbox_count: u64,
+    first_outbox: Option<u64>,
+    last_outbox: Option<u64>,
+}
+
+pub(crate) fn resolve_device(
+    connection: &mut Connection,
+    requested: Option<SyncDeviceId>,
+) -> Result<Option<SyncDeviceId>> {
+    let active = {
+        let mut statement = connection.prepare(
+            "SELECT device_id FROM sync_devices
+             WHERE next_sequence IS NOT NULL ORDER BY device_id LIMIT 2",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if active.len() > 1 {
+        return Err(Error::InvalidDatabase(
+            "multiple local synchronization devices are active".into(),
+        ));
+    }
+    let active = active
+        .into_iter()
+        .next()
+        .map(decode_device_id)
+        .transpose()?;
+
+    match (active, requested) {
+        (Some(active), Some(requested)) if active != requested => {
+            return Err(Error::SyncDeviceMismatch { active, requested });
+        }
+        (Some(active), _) => return Ok(Some(active)),
+        (None, None) => return Ok(None),
+        (None, Some(_)) => {}
+    }
+
+    let device_id = requested.expect("requested device handled above");
     let transaction = connection.transaction()?;
     transaction.execute(
         "INSERT INTO sync_devices (device_id, next_sequence)
@@ -37,7 +79,153 @@ pub(crate) fn register_device(connection: &mut Connection, device_id: SyncDevice
         params![device_id.as_bytes().as_slice()],
     )?;
     transaction.commit()?;
-    Ok(())
+    Ok(Some(device_id))
+}
+
+pub(crate) fn check_sync(
+    connection: &Connection,
+    maximum: usize,
+) -> Result<(Vec<CheckIssue>, bool)> {
+    let mut issues = Vec::new();
+    let mut omitted = false;
+    let mut devices = BTreeMap::new();
+    let mut active_devices = 0_usize;
+    let mut statement = connection.prepare(
+        "SELECT devices.device_id, devices.next_sequence, devices.applied_sequence,
+                COUNT(outbox.sequence), MIN(outbox.sequence), MAX(outbox.sequence)
+         FROM sync_devices AS devices
+         LEFT JOIN sync_outbox AS outbox ON outbox.device_id = devices.device_id
+         GROUP BY devices.device_id
+         ORDER BY devices.device_id",
+    )?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let device_id = decode_device_id(row.get(0)?)?;
+        let next = row.get::<_, Option<i64>>(1)?.map(sequence).transpose()?;
+        let applied = sequence_allow_zero(row.get(2)?)?;
+        let outbox_count = sequence_allow_zero(row.get(3)?)?;
+        let first_outbox = row.get::<_, Option<i64>>(4)?.map(sequence).transpose()?;
+        let last_outbox = row.get::<_, Option<i64>>(5)?.map(sequence).transpose()?;
+        if next.is_some() {
+            active_devices += 1;
+        }
+        let state = DeviceState {
+            next,
+            applied,
+            outbox_count,
+            first_outbox,
+            last_outbox,
+        };
+        if !device_state_is_valid(&state) {
+            record_sync_issue(
+                &mut issues,
+                &mut omitted,
+                maximum,
+                format!("device {device_id} has an inconsistent sequence or outbox frontier"),
+            );
+        }
+        devices.insert(device_id, state);
+    }
+    drop(rows);
+    drop(statement);
+
+    if active_devices > 1 {
+        record_sync_issue(
+            &mut issues,
+            &mut omitted,
+            maximum,
+            "multiple local synchronization devices are active".into(),
+        );
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT device_id, sequence, changeset
+         FROM sync_outbox ORDER BY device_id, sequence",
+    )?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let device_id = decode_device_id(row.get(0)?)?;
+        let sequence = sequence(row.get(1)?)?;
+        let changeset: Vec<u8> = row.get(2)?;
+        if let Err(error) = touched_nodes(&changeset) {
+            record_sync_issue(
+                &mut issues,
+                &mut omitted,
+                maximum,
+                format!("device {device_id} outbox sequence {sequence} is invalid: {error}"),
+            );
+        }
+    }
+    drop(rows);
+    drop(statement);
+
+    let mut statement = connection.prepare(
+        "SELECT device_id, first_sequence, last_sequence
+         FROM sync_batch ORDER BY device_id",
+    )?;
+    let mut rows = statement.query([])?;
+    while let Some(row) = rows.next()? {
+        let device_id = decode_device_id(row.get(0)?)?;
+        let first = sequence(row.get(1)?)?;
+        let last = sequence(row.get(2)?)?;
+        let state_is_valid = devices.get(&device_id).is_some_and(|state| {
+            state.next.is_some()
+                && state.first_outbox == Some(first)
+                && state
+                    .last_outbox
+                    .is_some_and(|outbox_last| last <= outbox_last)
+        });
+        if !state_is_valid {
+            record_sync_issue(
+                &mut issues,
+                &mut omitted,
+                maximum,
+                format!("device {device_id} has a prepared package outside its outbox frontier"),
+            );
+        }
+        if let Err(error) = stored_batch(connection, device_id) {
+            record_sync_issue(
+                &mut issues,
+                &mut omitted,
+                maximum,
+                format!("device {device_id} has an invalid prepared package: {error}"),
+            );
+        }
+    }
+
+    Ok((issues, omitted))
+}
+
+fn device_state_is_valid(state: &DeviceState) -> bool {
+    match state.next {
+        Some(next) => {
+            next > state.applied
+                && next - state.applied - 1 == state.outbox_count
+                && match state.outbox_count {
+                    0 => state.first_outbox.is_none() && state.last_outbox.is_none(),
+                    _ => {
+                        state.first_outbox == Some(state.applied + 1)
+                            && state.last_outbox == Some(next - 1)
+                    }
+                }
+        }
+        None => {
+            state.outbox_count == 0 && state.first_outbox.is_none() && state.last_outbox.is_none()
+        }
+    }
+}
+
+fn record_sync_issue(
+    issues: &mut Vec<CheckIssue>,
+    omitted: &mut bool,
+    maximum: usize,
+    message: String,
+) {
+    if issues.len() < maximum {
+        issues.push(CheckIssue::InvalidSyncState(message));
+    } else {
+        *omitted = true;
+    }
 }
 
 pub(crate) fn capture_session(
@@ -247,26 +435,40 @@ impl Engine {
 
         let touched = touched_nodes(package.payload)?;
         let transaction = self.connection.transaction()?;
-        let conflict = Arc::new(AtomicBool::new(false));
-        let conflict_seen = Arc::clone(&conflict);
+        const NO_APPLY_ERROR: u8 = 0;
+        const MISSING_DEPENDENCY: u8 = 1;
+        const TRUE_CONFLICT: u8 = 2;
+        let apply_error = Arc::new(AtomicU8::new(NO_APPLY_ERROR));
+        let apply_error_seen = Arc::clone(&apply_error);
         let mut payload = package.payload;
         let applied = transaction.apply_strm(
             &mut payload,
             None::<fn(&str) -> bool>,
-            move |_kind, _item| {
-                conflict_seen.store(true, Ordering::Relaxed);
+            move |kind, _item| {
+                let classification = match kind {
+                    ConflictType::SQLITE_CHANGESET_NOTFOUND
+                    | ConflictType::SQLITE_CHANGESET_FOREIGN_KEY => MISSING_DEPENDENCY,
+                    _ => TRUE_CONFLICT,
+                };
+                apply_error_seen.store(classification, Ordering::Relaxed);
                 ConflictAction::SQLITE_CHANGESET_ABORT
             },
         );
         if let Err(error) = applied {
-            if conflict.load(Ordering::Relaxed) {
-                return Err(Error::SyncConflict {
+            let error = match apply_error.load(Ordering::Relaxed) {
+                MISSING_DEPENDENCY => Error::SyncDependencyMissing {
                     device_id: package.device_id,
                     first_sequence: package.first_sequence,
                     last_sequence: package.last_sequence,
-                });
-            }
-            return Err(error.into());
+                },
+                TRUE_CONFLICT => Error::SyncConflict {
+                    device_id: package.device_id,
+                    first_sequence: package.first_sequence,
+                    last_sequence: package.last_sequence,
+                },
+                _ => error.into(),
+            };
+            return Err(error);
         }
         validate_merged_state(
             &transaction,
@@ -454,6 +656,13 @@ fn workspace_id(connection: &Connection) -> Result<[u8; 16]> {
     bytes
         .try_into()
         .map_err(|_| Error::InvalidDatabase("the workspace identity is invalid".into()))
+}
+
+fn decode_device_id(bytes: Vec<u8>) -> Result<SyncDeviceId> {
+    let bytes = bytes
+        .try_into()
+        .map_err(|_| Error::InvalidDatabase("a synchronization device ID is invalid".into()))?;
+    Ok(SyncDeviceId::from_bytes(bytes))
 }
 
 fn applied_sequence(connection: &Connection, device_id: SyncDeviceId) -> Result<u64> {
