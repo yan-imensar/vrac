@@ -60,11 +60,12 @@ fn the_cli_initializes_edits_moves_and_checks_a_workspace() {
     assert!(children.contains(&child_id));
     assert!(children.ends_with("\tupdated child\n"));
 
-    let move_to_root = vrac(&["move", database, &child_id, "--position", "5"]);
+    let move_to_root = vrac(&["move", database, &child_id, "--first"]);
     assert!(move_to_root.status.success());
 
     let roots = vrac(&["children", database]);
     let roots = String::from_utf8(roots.stdout).expect("roots output is UTF-8");
+    assert!(roots.starts_with(&child_id));
     assert!(roots.contains(&root_id));
     assert!(roots.contains(&child_id));
 
@@ -78,4 +79,33 @@ fn invalid_cli_input_has_a_distinct_exit_code() {
     let output = vrac(&["children"]);
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("children expects a file"));
+}
+
+#[test]
+fn the_cli_accepts_relative_placement_and_rejects_conflicting_options() {
+    let directory = tempfile::tempdir().expect("create temporary directory");
+    let database = directory.path().join("placement.vrac");
+    let database = path_text(&database);
+    assert!(vrac(&["init", database]).status.success());
+
+    let last = vrac(&["add", database, "last"]);
+    assert!(last.status.success());
+    let last_id = String::from_utf8(last.stdout)
+        .expect("last id is UTF-8")
+        .trim()
+        .to_owned();
+    let first = vrac(&["add", database, "--before", &last_id, "first"]);
+    assert!(first.status.success());
+    let first_id = String::from_utf8(first.stdout)
+        .expect("first id is UTF-8")
+        .trim()
+        .to_owned();
+
+    let roots = vrac(&["children", database]);
+    assert!(roots.status.success());
+    assert!(String::from_utf8_lossy(&roots.stdout).starts_with(&first_id));
+
+    let conflicting = vrac(&["add", database, "--first", "--last", "invalid"]);
+    assert_eq!(conflicting.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&conflicting.stderr).contains("conflicts"));
 }

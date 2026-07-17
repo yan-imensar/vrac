@@ -2,18 +2,20 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::process::ExitCode;
 
-use vrac::{CheckIssue, CreateNode, Destination, Engine, GenerateShape, Node, NodeId, Page};
+use vrac::{
+    CheckIssue, CreateNode, Destination, Engine, GenerateShape, Node, NodeId, Page, Placement,
+};
 
 const USAGE: &str = "\
 Vrac, a local-first outliner engine
 
 Usage:
   vrac init <file>
-  vrac add <file> [--parent <id>] <text>
+  vrac add <file> [--parent <id>] [--first|--last|--before <id>|--after <id>] <text>
   vrac node <file> <id>
   vrac children <file> [--parent <id>] [--limit <n>]
   vrac set-text <file> <id> <text>
-  vrac move <file> <id> [--parent <id>] [--position <n>]
+  vrac move <file> <id> [--parent <id>] [--first|--last|--before <id>|--after <id>]
   vrac check <file>
   vrac generate <file> --nodes <n> [--shape wide|deep|mixed]
 ";
@@ -70,6 +72,7 @@ fn command_add(arguments: &[String]) -> Result<ExitCode, CliError> {
 
     let path = &arguments[0];
     let mut parent_id = None;
+    let mut placement = None;
     let mut text_parts = Vec::new();
     let mut index = 1;
     while index < arguments.len() {
@@ -81,6 +84,16 @@ fn command_add(arguments: &[String]) -> Result<ExitCode, CliError> {
                     ));
                 }
                 parent_id = Some(parse_id(option_value(arguments, &mut index, "--parent")?)?);
+            }
+            "--first" => set_placement(&mut placement, Placement::First, "--first")?,
+            "--last" => set_placement(&mut placement, Placement::Last, "--last")?,
+            "--before" => {
+                let id = parse_id(option_value(arguments, &mut index, "--before")?)?;
+                set_placement(&mut placement, Placement::Before(id), "--before")?;
+            }
+            "--after" => {
+                let id = parse_id(option_value(arguments, &mut index, "--after")?)?;
+                set_placement(&mut placement, Placement::After(id), "--after")?;
             }
             "--" => {
                 text_parts.extend_from_slice(&arguments[index + 1..]);
@@ -101,7 +114,7 @@ fn command_add(arguments: &[String]) -> Result<ExitCode, CliError> {
     let mut engine = Engine::open(path)?;
     let node = engine.create_node(CreateNode {
         parent_id,
-        position: None,
+        placement: placement.unwrap_or_default(),
         text: text_parts.join(" "),
     })?;
     println!("{}", node.id);
@@ -148,7 +161,10 @@ fn command_children(arguments: &[String]) -> Result<ExitCode, CliError> {
     }
 
     let engine = Engine::open(path)?;
-    for node in engine.children(parent_id, Page { limit, after: None })? {
+    for node in engine
+        .children(parent_id, Page { limit, after: None })?
+        .nodes
+    {
         print_node(&node);
     }
     Ok(ExitCode::SUCCESS)
@@ -177,7 +193,7 @@ fn command_move(arguments: &[String]) -> Result<ExitCode, CliError> {
     let path = &arguments[0];
     let id = parse_id(&arguments[1])?;
     let mut parent_id = None;
-    let mut position = None;
+    let mut placement = None;
     let mut index = 2;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -189,18 +205,15 @@ fn command_move(arguments: &[String]) -> Result<ExitCode, CliError> {
                 }
                 parent_id = Some(parse_id(option_value(arguments, &mut index, "--parent")?)?);
             }
-            "--position" => {
-                if position.is_some() {
-                    return Err(CliError::Usage(
-                        "--position was provided more than once".into(),
-                    ));
-                }
-                let value = option_value(arguments, &mut index, "--position")?;
-                position = Some(
-                    value
-                        .parse()
-                        .map_err(|_| CliError::Usage(format!("invalid position: {value}")))?,
-                );
+            "--first" => set_placement(&mut placement, Placement::First, "--first")?,
+            "--last" => set_placement(&mut placement, Placement::Last, "--last")?,
+            "--before" => {
+                let reference = parse_id(option_value(arguments, &mut index, "--before")?)?;
+                set_placement(&mut placement, Placement::Before(reference), "--before")?;
+            }
+            "--after" => {
+                let reference = parse_id(option_value(arguments, &mut index, "--after")?)?;
+                set_placement(&mut placement, Placement::After(reference), "--after")?;
             }
             option => return Err(CliError::Usage(format!("unknown option: {option}"))),
         }
@@ -212,7 +225,7 @@ fn command_move(arguments: &[String]) -> Result<ExitCode, CliError> {
         id,
         Destination {
             parent_id,
-            position,
+            placement: placement.unwrap_or_default(),
         },
     )?;
     Ok(ExitCode::SUCCESS)
@@ -309,13 +322,7 @@ fn print_node(node: &Node) {
     let parent = node
         .parent_id
         .map_or_else(|| "-".into(), |id| id.to_string());
-    println!(
-        "{}\t{}\t{}\t{}",
-        node.id,
-        parent,
-        node.position,
-        escape_text(&node.text)
-    );
+    println!("{}\t{}\t{}", node.id, parent, escape_text(&node.text));
 }
 
 fn escape_text(text: &str) -> String {
@@ -353,6 +360,20 @@ fn option_value<'a>(
         .get(*index)
         .map(String::as_str)
         .ok_or_else(|| CliError::Usage(format!("missing value after {option}")))
+}
+
+fn set_placement(
+    current: &mut Option<Placement>,
+    placement: Placement,
+    option: &str,
+) -> Result<(), CliError> {
+    if current.is_some() {
+        return Err(CliError::Usage(format!(
+            "{option} conflicts with another placement option"
+        )));
+    }
+    *current = Some(placement);
+    Ok(())
 }
 
 fn parse_id(value: &str) -> Result<NodeId, CliError> {

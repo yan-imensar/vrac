@@ -78,6 +78,8 @@ never terminates the process.
 
 - An identity is opaque, stable, and independent from the local database.
 - Siblings are always returned in deterministic order.
+- Clients express sibling order through `Placement`; numeric storage positions
+  are not part of the public API.
 - Collection reads use cursor pagination, never `OFFSET` on paths intended for
   large collections.
 - A normal operation neither loads nor traverses the entire tree.

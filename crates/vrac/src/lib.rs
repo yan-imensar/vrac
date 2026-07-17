@@ -4,6 +4,7 @@
 //! synchronous and performs no user-facing input or output.
 
 mod db;
+mod order;
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -82,17 +83,14 @@ impl StdError for ParseNodeIdError {}
 pub struct Node {
     pub id: NodeId,
     pub parent_id: Option<NodeId>,
-    pub position: i64,
     pub text: String,
 }
 
 /// Data required to create a node.
-///
-/// When no position is supplied, the node is appended to its siblings.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CreateNode {
     pub parent_id: Option<NodeId>,
-    pub position: Option<i64>,
+    pub placement: Placement,
     pub text: String,
 }
 
@@ -100,33 +98,39 @@ impl CreateNode {
     pub fn new(text: impl Into<String>) -> Self {
         Self {
             parent_id: None,
-            position: None,
+            placement: Placement::Last,
             text: text.into(),
         }
     }
 }
 
 /// Destination of a move operation.
-///
-/// When no position is supplied, the node is appended to its new siblings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Destination {
     pub parent_id: Option<NodeId>,
-    pub position: Option<i64>,
+    pub placement: Placement,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Relative placement of a node within its sibling list.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Placement {
+    First,
+    #[default]
+    Last,
+    Before(NodeId),
+    After(NodeId),
+}
+
+/// Opaque cursor returned by a paginated read.
+#[derive(Clone, Copy, Eq, PartialEq)]
 pub struct Cursor {
-    pub position: i64,
-    pub id: NodeId,
+    position: i64,
+    id: NodeId,
 }
 
-impl From<&Node> for Cursor {
-    fn from(node: &Node) -> Self {
-        Self {
-            position: node.position,
-            id: node.id,
-        }
+impl fmt::Debug for Cursor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Cursor(..)")
     }
 }
 
@@ -143,6 +147,12 @@ impl Default for Page {
             after: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodePage {
+    pub nodes: Vec<Node>,
+    pub next: Option<Cursor>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -187,8 +197,15 @@ pub enum Error {
     UnsupportedSchemaVersion(i64),
     NodeNotFound(NodeId),
     ParentNotFound(NodeId),
+    PlacementReferenceNotSibling {
+        reference: NodeId,
+        parent_id: Option<NodeId>,
+    },
     Cycle,
-    InvalidPageLimit { limit: usize, maximum: usize },
+    InvalidPageLimit {
+        limit: usize,
+        maximum: usize,
+    },
     PositionOverflow,
     GenerationTooLarge(u64),
 }
@@ -203,6 +220,20 @@ impl fmt::Display for Error {
             }
             Self::NodeNotFound(id) => write!(formatter, "node not found: {id}"),
             Self::ParentNotFound(id) => write!(formatter, "parent not found: {id}"),
+            Self::PlacementReferenceNotSibling {
+                reference,
+                parent_id: Some(parent_id),
+            } => write!(
+                formatter,
+                "placement reference {reference} is not a child of {parent_id}"
+            ),
+            Self::PlacementReferenceNotSibling {
+                reference,
+                parent_id: None,
+            } => write!(
+                formatter,
+                "placement reference {reference} is not a root node"
+            ),
             Self::Cycle => formatter.write_str("this move would create a cycle"),
             Self::InvalidPageLimit { limit, maximum } => {
                 write!(formatter, "invalid page size ({limit}), maximum: {maximum}")

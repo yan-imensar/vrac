@@ -2,16 +2,21 @@ use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
+use crate::order::{POSITION_STEP, position_at, position_for_placement};
 use crate::{
     CheckIssue, CheckReport, CreateNode, Cursor, Destination, Error, GenerateShape, MAX_PAGE_SIZE,
-    NODE_ID_LENGTH, Node, NodeId, Page, Result,
+    NODE_ID_LENGTH, Node, NodeId, NodePage, Page, Placement, Result,
 };
 
 const SCHEMA_VERSION: i64 = 1;
-const POSITION_STEP: i64 = 1_024;
 const MAX_REPORTED_ISSUES: usize = 100;
 
 type RawNode = (Vec<u8>, Option<Vec<u8>>, i64, String);
+
+struct StoredNode {
+    node: Node,
+    position: i64,
+}
 
 pub struct Engine {
     connection: Connection,
@@ -35,17 +40,14 @@ impl Engine {
     pub fn create_node(&mut self, input: CreateNode) -> Result<Node> {
         let CreateNode {
             parent_id,
-            position,
+            placement,
             text,
         } = input;
 
         let transaction = self.connection.transaction()?;
         ensure_parent_exists(&transaction, parent_id)?;
 
-        let position = match position {
-            Some(position) => position,
-            None => next_position(&transaction, parent_id)?,
-        };
+        let position = position_for_placement(&transaction, parent_id, placement, None)?;
         let id = random_node_id(&transaction)?;
         let parent_bytes = parent_id.as_ref().map(node_id_bytes);
 
@@ -58,34 +60,24 @@ impl Engine {
         Ok(Node {
             id,
             parent_id,
-            position,
             text,
         })
     }
 
     pub fn node(&self, id: NodeId) -> Result<Option<Node>> {
-        let raw = self
-            .connection
-            .query_row(
-                "SELECT id, parent_id, position, text FROM nodes WHERE id = ?1",
-                params![node_id_bytes(&id)],
-                raw_node,
-            )
-            .optional()?;
-
-        raw.map(decode_node).transpose()
+        stored_node(&self.connection, id).map(|node| node.map(|stored| stored.node))
     }
 
-    pub fn children(&self, parent_id: Option<NodeId>, page: Page) -> Result<Vec<Node>> {
+    pub fn children(&self, parent_id: Option<NodeId>, page: Page) -> Result<NodePage> {
         validate_page(page)?;
         ensure_parent_exists(&self.connection, parent_id)?;
 
         let parent_bytes = parent_id.as_ref().map(node_id_bytes);
-        let limit = i64::try_from(page.limit).map_err(|_| Error::InvalidPageLimit {
+        let query_limit = i64::try_from(page.limit + 1).map_err(|_| Error::InvalidPageLimit {
             limit: page.limit,
             maximum: MAX_PAGE_SIZE,
         })?;
-        let mut nodes = Vec::with_capacity(page.limit);
+        let mut stored_nodes = Vec::with_capacity(page.limit + 1);
 
         match page.after {
             Some(Cursor { position, id }) => {
@@ -96,10 +88,14 @@ impl Engine {
                      ORDER BY position, id
                      LIMIT ?4",
                 )?;
-                let mut rows =
-                    statement.query(params![parent_bytes, position, node_id_bytes(&id), limit])?;
+                let mut rows = statement.query(params![
+                    parent_bytes,
+                    position,
+                    node_id_bytes(&id),
+                    query_limit
+                ])?;
                 while let Some(row) = rows.next()? {
-                    nodes.push(decode_node(raw_node(row)?)?);
+                    stored_nodes.push(decode_stored_node(raw_node(row)?)?);
                 }
             }
             None => {
@@ -110,14 +106,28 @@ impl Engine {
                      ORDER BY position, id
                      LIMIT ?2",
                 )?;
-                let mut rows = statement.query(params![parent_bytes, limit])?;
+                let mut rows = statement.query(params![parent_bytes, query_limit])?;
                 while let Some(row) = rows.next()? {
-                    nodes.push(decode_node(raw_node(row)?)?);
+                    stored_nodes.push(decode_stored_node(raw_node(row)?)?);
                 }
             }
         }
 
-        Ok(nodes)
+        let has_more = stored_nodes.len() > page.limit;
+        if has_more {
+            stored_nodes.pop();
+        }
+        let next = if has_more {
+            stored_nodes.last().map(|last| Cursor {
+                position: last.position,
+                id: last.node.id,
+            })
+        } else {
+            None
+        };
+        let nodes = stored_nodes.into_iter().map(|stored| stored.node).collect();
+
+        Ok(NodePage { nodes, next })
     }
 
     pub fn set_text(&mut self, id: NodeId, text: String) -> Result<()> {
@@ -135,16 +145,31 @@ impl Engine {
 
     pub fn move_node(&mut self, id: NodeId, destination: Destination) -> Result<()> {
         let transaction = self.connection.transaction()?;
-        if !node_exists(&transaction, id)? {
-            return Err(Error::NodeNotFound(id));
-        }
+        let moved = stored_node(&transaction, id)?.ok_or(Error::NodeNotFound(id))?;
         ensure_parent_exists(&transaction, destination.parent_id)?;
         ensure_move_is_acyclic(&transaction, id, destination.parent_id)?;
 
-        let position = match destination.position {
-            Some(position) => position,
-            None => next_position(&transaction, destination.parent_id)?,
+        let references_itself = match destination.placement {
+            Placement::Before(reference) | Placement::After(reference) => reference == id,
+            Placement::First | Placement::Last => false,
         };
+        if references_itself {
+            if moved.node.parent_id != destination.parent_id {
+                return Err(Error::PlacementReferenceNotSibling {
+                    reference: id,
+                    parent_id: destination.parent_id,
+                });
+            }
+            transaction.commit()?;
+            return Ok(());
+        }
+
+        let position = position_for_placement(
+            &transaction,
+            destination.parent_id,
+            destination.placement,
+            Some(id),
+        )?;
         let parent_bytes = destination.parent_id.as_ref().map(node_id_bytes);
 
         transaction.execute(
@@ -338,12 +363,14 @@ fn raw_node(row: &Row<'_>) -> rusqlite::Result<RawNode> {
     Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
 }
 
-fn decode_node((id, parent_id, position, text): RawNode) -> Result<Node> {
-    Ok(Node {
-        id: decode_id(id)?,
-        parent_id: parent_id.map(decode_id).transpose()?,
+fn decode_stored_node((id, parent_id, position, text): RawNode) -> Result<StoredNode> {
+    Ok(StoredNode {
+        node: Node {
+            id: decode_id(id)?,
+            parent_id: parent_id.map(decode_id).transpose()?,
+            text,
+        },
         position,
-        text,
     })
 }
 
@@ -378,6 +405,17 @@ fn node_exists(connection: &Connection, id: NodeId) -> Result<bool> {
         .map_err(Error::from)
 }
 
+fn stored_node(connection: &Connection, id: NodeId) -> Result<Option<StoredNode>> {
+    let raw = connection
+        .query_row(
+            "SELECT id, parent_id, position, text FROM nodes WHERE id = ?1",
+            params![node_id_bytes(&id)],
+            raw_node,
+        )
+        .optional()?;
+    raw.map(decode_stored_node).transpose()
+}
+
 fn ensure_parent_exists(connection: &Connection, parent_id: Option<NodeId>) -> Result<()> {
     if let Some(parent_id) = parent_id
         && !node_exists(connection, parent_id)?
@@ -401,14 +439,6 @@ fn next_position(connection: &Connection, parent_id: Option<NodeId>) -> Result<i
             .ok_or(Error::PositionOverflow),
         None => Ok(0),
     }
-}
-
-fn position_at(start: i64, index: usize) -> Result<i64> {
-    let index = i64::try_from(index).map_err(|_| Error::PositionOverflow)?;
-    let offset = index
-        .checked_mul(POSITION_STEP)
-        .ok_or(Error::PositionOverflow)?;
-    start.checked_add(offset).ok_or(Error::PositionOverflow)
 }
 
 fn ensure_move_is_acyclic(

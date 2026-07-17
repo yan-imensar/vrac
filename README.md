@@ -33,11 +33,11 @@ cargo build --release -p vrac-cli
 
 ```text
 vrac init <file>
-vrac add <file> [--parent <id>] <text>
+vrac add <file> [--parent <id>] [--first|--last|--before <id>|--after <id>] <text>
 vrac node <file> <id>
 vrac children <file> [--parent <id>] [--limit <n>]
 vrac set-text <file> <id> <text>
-vrac move <file> <id> [--parent <id>] [--position <n>]
+vrac move <file> <id> [--parent <id>] [--first|--last|--before <id>|--after <id>]
 vrac check <file>
 vrac generate <file> --nodes <n> [--shape wide|deep|mixed]
 ```
@@ -52,5 +52,6 @@ cargo run -q -p vrac-cli -- children notes.vrac --parent "$root_id"
 cargo run -q -p vrac-cli -- check notes.vrac
 ```
 
-Node output contains four tab-separated columns: identifier, parent (`-` for a
-root node), position, and escaped text.
+Node output contains three tab-separated columns: identifier, parent (`-` for a
+root node), and escaped text. Numeric storage positions are not exposed to
+clients.
