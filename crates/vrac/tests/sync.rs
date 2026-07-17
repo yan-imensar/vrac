@@ -1,3 +1,7 @@
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
 use tempfile::tempdir;
 use vrac::{
     CreateNode, Destination, Engine, Error, Placement, ReferenceInput, SyncApply, SyncDeviceId,
@@ -17,6 +21,41 @@ fn flush(engine: &mut Engine) -> Vec<u8> {
         .confirm_sync_package(&package)
         .expect("confirm package");
     bytes
+}
+
+fn publish(engine: &mut Engine, provider: &Path) -> Vec<PathBuf> {
+    let mut published = Vec::new();
+    while let Some(package) = engine.next_sync_package().expect("prepare package") {
+        let path = provider.join(package.file_name());
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .expect("publish immutable package");
+        file.write_all(package.bytes()).expect("write package");
+        file.sync_all().expect("make package durable");
+        engine
+            .confirm_sync_package(&package)
+            .expect("confirm published package");
+        published.push(path);
+    }
+    published
+}
+
+fn synchronize(engine: &mut Engine, provider: &Path) -> vrac::Result<()> {
+    let mut packages: Vec<_> = std::fs::read_dir(provider)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<_>>()?;
+    packages.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "vrac-sync")
+    });
+    packages.sort();
+    for package in packages {
+        let bytes = std::fs::read(package)?;
+        engine.apply_sync_package(&bytes)?;
+    }
+    Ok(())
 }
 
 #[test]
@@ -249,5 +288,106 @@ fn restoring_a_device_identity_continues_after_the_checkpoint_frontier() {
     assert_eq!(
         receiver.node(node.id).unwrap().unwrap().text,
         "Restored edit"
+    );
+}
+
+#[test]
+fn two_offline_devices_converge_through_an_immutable_provider_folder() {
+    let directory = tempdir().expect("create temporary directory");
+    let provider = directory.path().join("provider");
+    std::fs::create_dir(&provider).expect("create provider folder");
+    let first_path = directory.path().join("device-a.vrac");
+    let second_path = directory.path().join("device-b.vrac");
+    let checkpoint = provider.join("bootstrap.vrac");
+
+    let mut first = Engine::open_synced(&first_path, device(1)).expect("open device A");
+    let project = first
+        .create_node(CreateNode::new("Project X"))
+        .expect("create project");
+    let context = first
+        .create_node(CreateNode::new("Context"))
+        .expect("create context");
+    publish(&mut first, &provider);
+    first.checkpoint(&checkpoint).expect("publish checkpoint");
+    drop(first);
+    std::fs::copy(&checkpoint, &second_path).expect("install checkpoint on device B");
+
+    let mut first = Engine::open_synced(&first_path, device(1)).expect("reopen device A");
+    first
+        .set_text(project.id, "Project Y".into())
+        .expect("edit project offline on A");
+    first
+        .move_node(
+            context.id,
+            Destination {
+                parent_id: Some(project.id),
+                placement: Placement::Last,
+            },
+        )
+        .expect("move context offline on A");
+    drop(first);
+
+    let mut second = Engine::open_synced(&second_path, device(2)).expect("open device B");
+    let text = "Decision on [[Project X]]";
+    let mut input = CreateNode::new(text);
+    input.parent_id = Some(project.id);
+    input.tags = vec!["meeting".into(), "decision".into()];
+    input.references = vec![ReferenceInput {
+        label_start: 14,
+        label_end: 23,
+        target_id: project.id,
+    }];
+    let decision = second
+        .create_node(input)
+        .expect("create decision offline on B");
+    drop(second);
+
+    let mut first = Engine::open_synced(&first_path, device(1)).expect("reopen device A");
+    let mut second = Engine::open_synced(&second_path, device(2)).expect("reopen device B");
+    publish(&mut first, &provider);
+    publish(&mut second, &provider);
+    synchronize(&mut first, &provider).expect("synchronize device A");
+    synchronize(&mut second, &provider).expect("synchronize device B");
+
+    for engine in [&first, &second] {
+        assert_eq!(engine.node(project.id).unwrap().unwrap().text, "Project Y");
+        assert_eq!(
+            engine.node(context.id).unwrap().unwrap().parent_id,
+            Some(project.id)
+        );
+        let synchronized = engine.node(decision.id).unwrap().unwrap();
+        assert_eq!(synchronized.tags, ["decision", "meeting"]);
+        assert_eq!(synchronized.references[0].target_text, "Project Y");
+        assert!(engine.check().unwrap().is_ok());
+    }
+
+    first
+        .set_text(project.id, "Conflict from A".into())
+        .expect("edit same node on A");
+    second
+        .set_text(project.id, "Conflict from B".into())
+        .expect("edit same node on B");
+    let from_first = publish(&mut first, &provider);
+    let from_second = publish(&mut second, &provider);
+    assert_eq!(from_first.len(), 1);
+    assert_eq!(from_second.len(), 1);
+
+    let package_from_second = std::fs::read(&from_second[0]).unwrap();
+    assert!(matches!(
+        first.apply_sync_package(&package_from_second),
+        Err(Error::SyncConflict { .. })
+    ));
+    let package_from_first = std::fs::read(&from_first[0]).unwrap();
+    assert!(matches!(
+        second.apply_sync_package(&package_from_first),
+        Err(Error::SyncConflict { .. })
+    ));
+    assert_eq!(
+        first.node(project.id).unwrap().unwrap().text,
+        "Conflict from A"
+    );
+    assert_eq!(
+        second.node(project.id).unwrap().unwrap().text,
+        "Conflict from B"
     );
 }
