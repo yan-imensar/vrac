@@ -4,6 +4,7 @@
 //! synchronous and performs no user-facing input or output.
 
 mod db;
+mod nodes;
 mod order;
 
 use std::error::Error as StdError;
@@ -194,6 +195,7 @@ pub enum CheckIssue {
 pub enum Error {
     Sqlite(rusqlite::Error),
     InvalidDatabase(String),
+    StorageConfiguration(String),
     UnsupportedSchemaVersion(i64),
     NodeNotFound(NodeId),
     ParentNotFound(NodeId),
@@ -215,6 +217,9 @@ impl fmt::Display for Error {
         match self {
             Self::Sqlite(error) => write!(formatter, "SQLite error: {error}"),
             Self::InvalidDatabase(reason) => write!(formatter, "invalid Vrac database: {reason}"),
+            Self::StorageConfiguration(reason) => {
+                write!(formatter, "invalid SQLite configuration: {reason}")
+            }
             Self::UnsupportedSchemaVersion(version) => {
                 write!(formatter, "unsupported schema version: {version}")
             }

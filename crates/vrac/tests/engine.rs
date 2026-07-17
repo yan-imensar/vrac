@@ -7,6 +7,8 @@ use vrac::{
     Placement,
 };
 
+const VRAC_APPLICATION_ID: i64 = 0x5652_4143;
+
 struct TestDatabase {
     _directory: TempDir,
     path: PathBuf,
@@ -68,6 +70,112 @@ fn a_node_can_be_read_after_reopening_the_database() {
             text: "final".into(),
             ..child
         })
+    );
+}
+
+#[test]
+fn new_databases_have_stable_format_markers_and_wal() {
+    let database = TestDatabase::new();
+    let engine = Engine::open(database.path()).expect("open database");
+    drop(engine);
+
+    let connection = Connection::open(database.path()).expect("open raw SQLite database");
+    let application_id: i64 = connection
+        .pragma_query_value(None, "application_id", |row| row.get(0))
+        .expect("read application ID");
+    let schema_version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("read schema version");
+    let journal_mode: String = connection
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
+        .expect("read journal mode");
+
+    assert_eq!(application_id, VRAC_APPLICATION_ID);
+    assert_eq!(schema_version, 1);
+    assert_eq!(journal_mode, "wal");
+}
+
+#[test]
+fn valid_unmarked_v1_databases_are_adopted() {
+    let database = TestDatabase::new();
+    let engine = Engine::open(database.path()).expect("open database");
+    drop(engine);
+
+    let connection = Connection::open(database.path()).expect("open raw SQLite database");
+    connection
+        .pragma_update(None, "application_id", 0)
+        .expect("remove application ID");
+    drop(connection);
+
+    let engine = Engine::open(database.path()).expect("adopt unmarked database");
+    drop(engine);
+    let connection = Connection::open(database.path()).expect("reopen raw SQLite database");
+    let application_id: i64 = connection
+        .pragma_query_value(None, "application_id", |row| row.get(0))
+        .expect("read application ID");
+    assert_eq!(application_id, VRAC_APPLICATION_ID);
+}
+
+#[test]
+fn foreign_application_ids_are_rejected_without_modification() {
+    let database = TestDatabase::new();
+    let engine = Engine::open(database.path()).expect("open database");
+    drop(engine);
+
+    let connection = Connection::open(database.path()).expect("open raw SQLite database");
+    connection
+        .pragma_update(None, "application_id", 0x1234_5678_i64)
+        .expect("replace application ID");
+    drop(connection);
+
+    assert!(matches!(
+        Engine::open(database.path()),
+        Err(Error::InvalidDatabase(reason)) if reason.contains("application ID")
+    ));
+    let connection = Connection::open(database.path()).expect("reopen raw SQLite database");
+    let application_id: i64 = connection
+        .pragma_query_value(None, "application_id", |row| row.get(0))
+        .expect("read application ID");
+    assert_eq!(application_id, 0x1234_5678);
+}
+
+#[test]
+fn schema_mismatches_are_rejected_before_adopting_an_unmarked_database() {
+    let database = TestDatabase::new();
+    let engine = Engine::open(database.path()).expect("open database");
+    drop(engine);
+
+    let connection = Connection::open(database.path()).expect("open raw SQLite database");
+    connection
+        .execute_batch(
+            "DROP INDEX nodes_by_parent;
+             CREATE INDEX nodes_by_parent ON nodes(parent_id, id);
+             PRAGMA application_id = 0;",
+        )
+        .expect("alter schema");
+    drop(connection);
+
+    assert!(matches!(
+        Engine::open(database.path()),
+        Err(Error::InvalidDatabase(reason)) if reason.contains("nodes_by_parent")
+    ));
+    let connection = Connection::open(database.path()).expect("reopen raw SQLite database");
+    let application_id: i64 = connection
+        .pragma_query_value(None, "application_id", |row| row.get(0))
+        .expect("read application ID");
+    assert_eq!(application_id, 0);
+}
+
+#[test]
+fn invalid_sqlite_files_are_rejected_without_overwriting_them() {
+    let database = TestDatabase::new();
+    let contents = b"this is not a SQLite database";
+    std::fs::write(database.path(), contents).expect("write invalid database");
+
+    assert!(Engine::open(database.path()).is_err());
+    assert_eq!(
+        std::fs::read(database.path()).expect("read invalid database"),
+        contents
     );
 }
 
@@ -590,4 +698,13 @@ fn unknown_schema_versions_are_not_modified() {
         Engine::open(database.path()),
         Err(Error::UnsupportedSchemaVersion(99))
     ));
+    let connection = Connection::open(database.path()).expect("reopen raw SQLite database");
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("read schema version");
+    let application_id: i64 = connection
+        .pragma_query_value(None, "application_id", |row| row.get(0))
+        .expect("read application ID");
+    assert_eq!(version, 99);
+    assert_eq!(application_id, 0);
 }

@@ -55,3 +55,16 @@ cargo run -q -p vrac-cli -- check notes.vrac
 Node output contains three tab-separated columns: identifier, parent (`-` for a
 root node), and escaped text. Numeric storage positions are not exposed to
 clients.
+
+## Database format
+
+A Vrac workspace is an ordinary SQLite file. Format version 1 uses
+`PRAGMA application_id = 0x56524143` (`VRAC` in ASCII) and
+`PRAGMA user_version = 1`. The engine validates both the marker and the exact
+schema before accepting an existing file. Valid unmarked version 1 databases
+created before the marker was introduced are marked on their first successful
+open.
+
+File-backed workspaces use foreign-key enforcement, WAL journaling, and
+`synchronous = FULL`. The canonical schema is
+[`crates/vrac/schema.sql`](crates/vrac/schema.sql).
