@@ -33,12 +33,17 @@ impl Engine {
             return Err(Error::CheckpointDestinationExists);
         }
 
+        if self.sync_device_id.is_some() {
+            self.next_sync_package()?;
+        }
+
         let parent = destination
             .parent()
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         let temporary = NamedTempFile::new_in(parent)?.into_temp_path();
         self.connection.backup(MAIN_DB, &temporary, None)?;
+        remove_local_sync_queue(&temporary)?;
 
         let report = validate_checkpoint(&temporary)?;
         if !report.is_ok() {
@@ -55,8 +60,36 @@ impl Engine {
     }
 }
 
+fn remove_local_sync_queue(path: &Path) -> Result<()> {
+    let mut connection = Connection::open(path)?;
+    let transaction = connection.transaction()?;
+    transaction.execute(
+        "UPDATE sync_devices
+         SET applied_sequence = (
+                 SELECT MAX(outbox.sequence)
+                 FROM sync_outbox AS outbox
+                 WHERE outbox.device_id = sync_devices.device_id
+             ),
+             applied_package = NULL
+         WHERE EXISTS (
+             SELECT 1 FROM sync_outbox AS outbox
+             WHERE outbox.device_id = sync_devices.device_id
+         )",
+        [],
+    )?;
+    transaction.execute("DELETE FROM sync_batch", [])?;
+    transaction.execute("DELETE FROM sync_outbox", [])?;
+    transaction.execute("UPDATE sync_devices SET next_sequence = NULL", [])?;
+    transaction.commit()?;
+    Ok(())
+}
+
 fn validate_checkpoint(path: &Path) -> Result<crate::CheckReport> {
     let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     prepare_database(&mut connection)?;
-    Engine { connection }.check()
+    Engine {
+        connection,
+        sync_device_id: None,
+    }
+    .check()
 }

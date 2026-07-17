@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::{Error, Result};
 
 pub(crate) const APPLICATION_ID: i64 = 0x5652_4143;
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_SQL: &str = include_str!("../schema.sql");
 
@@ -52,6 +52,30 @@ const SCHEMA_OBJECTS: &[SchemaObject] = &[
         table: "nodes",
         statement_index: 1,
     },
+    SchemaObject {
+        kind: "table",
+        name: "sync_batch",
+        table: "sync_batch",
+        statement_index: 9,
+    },
+    SchemaObject {
+        kind: "table",
+        name: "sync_devices",
+        table: "sync_devices",
+        statement_index: 7,
+    },
+    SchemaObject {
+        kind: "table",
+        name: "sync_outbox",
+        table: "sync_outbox",
+        statement_index: 8,
+    },
+    SchemaObject {
+        kind: "table",
+        name: "workspace",
+        table: "workspace",
+        statement_index: 6,
+    },
 ];
 
 pub(crate) fn prepare_database(connection: &mut Connection) -> Result<()> {
@@ -77,6 +101,7 @@ pub(crate) fn prepare_database(connection: &mut Connection) -> Result<()> {
                 SCHEMA_SQL,
                 SCHEMA_OBJECTS,
             )?;
+            validate_workspace_identity(connection)?;
             mark_database(connection, application_id)
         }
         version => Err(Error::UnsupportedSchemaVersion(version)),
@@ -86,6 +111,10 @@ pub(crate) fn prepare_database(connection: &mut Connection) -> Result<()> {
 fn create_database(connection: &mut Connection) -> Result<()> {
     let transaction = connection.transaction()?;
     transaction.execute_batch(SCHEMA_SQL)?;
+    transaction.execute(
+        "INSERT INTO workspace (singleton, workspace_id) VALUES (1, randomblob(16))",
+        [],
+    )?;
     transaction.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
     transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
     validate_schema(
@@ -94,7 +123,23 @@ fn create_database(connection: &mut Connection) -> Result<()> {
         SCHEMA_SQL,
         SCHEMA_OBJECTS,
     )?;
+    validate_workspace_identity(&transaction)?;
     transaction.commit()?;
+    Ok(())
+}
+
+fn validate_workspace_identity(connection: &Connection) -> Result<()> {
+    let identities: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM workspace
+         WHERE singleton = 1 AND typeof(workspace_id) = 'blob' AND length(workspace_id) = 16",
+        [],
+        |row| row.get(0),
+    )?;
+    if identities != 1 {
+        return Err(Error::InvalidDatabase(
+            "the workspace identity is missing or invalid".into(),
+        ));
+    }
     Ok(())
 }
 

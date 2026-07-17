@@ -4,7 +4,7 @@ use rusqlite::Connection;
 
 use crate::content::check_content;
 use crate::schema::prepare_database;
-use crate::{CheckIssue, CheckReport, Error, Result};
+use crate::{CheckIssue, CheckReport, Error, Result, SyncDeviceId};
 
 const MAX_REPORTED_ISSUES: usize = 100;
 
@@ -14,6 +14,7 @@ const MAX_REPORTED_ISSUES: usize = 100;
 /// process. A graphical client should run the engine outside its UI thread.
 pub struct Engine {
     pub(crate) connection: Connection,
+    pub(crate) sync_device_id: Option<SyncDeviceId>,
 }
 
 impl Engine {
@@ -31,12 +32,31 @@ impl Engine {
     /// # Ok::<(), vrac::Error>(())
     /// ```
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_internal(path, None)
+    }
+
+    /// Opens a workspace and captures subsequent product mutations for sync.
+    ///
+    /// `device_id` identifies this application installation and must be
+    /// retained locally by the client. Opening without it keeps synchronization
+    /// completely inactive and creates no pending changes.
+    pub fn open_synced(path: impl AsRef<Path>, device_id: SyncDeviceId) -> Result<Self> {
+        Self::open_internal(path, Some(device_id))
+    }
+
+    fn open_internal(path: impl AsRef<Path>, sync_device_id: Option<SyncDeviceId>) -> Result<Self> {
         let mut connection = Connection::open(path)?;
         enable_foreign_keys(&connection)?;
         prepare_database(&mut connection)?;
         configure_persistence(&connection)?;
+        if let Some(device_id) = sync_device_id {
+            crate::sync::register_device(&mut connection, device_id)?;
+        }
 
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            sync_device_id,
+        })
     }
 
     /// Checks SQLite integrity, foreign keys, and root reachability.

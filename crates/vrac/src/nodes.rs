@@ -7,6 +7,7 @@ use crate::content::{
 };
 use crate::db::Engine;
 use crate::order::{POSITION_STEP, position_at, position_for_placement};
+use crate::sync::{capture_session, commit_mutation};
 use crate::{
     CreateNode, Cursor, Destination, Error, GenerateShape, MAX_PAGE_SIZE, NODE_ID_LENGTH, Node,
     NodeId, NodePage, Page, Placement, Result,
@@ -34,7 +35,8 @@ impl Engine {
         } = input;
         let tags = canonicalize_tags(tags)?;
 
-        let transaction = self.connection.transaction()?;
+        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let transaction = self.connection.unchecked_transaction()?;
         ensure_parent_exists(&transaction, parent_id)?;
 
         let position = position_for_placement(&transaction, parent_id, placement, None)?;
@@ -48,7 +50,7 @@ impl Engine {
         let references = validate_references(&transaction, &text, references)?;
         replace_tags(&transaction, id, &tags)?;
         replace_references(&transaction, id, &references)?;
-        transaction.commit()?;
+        commit_mutation(transaction, captured, self.sync_device_id)?;
 
         self.node(id)?
             .ok_or_else(|| Error::InvalidDatabase("a newly created node could not be read".into()))
@@ -200,7 +202,8 @@ impl Engine {
 
     /// Replaces a node's text atomically.
     pub fn set_text(&mut self, id: NodeId, text: String) -> Result<()> {
-        let transaction = self.connection.transaction()?;
+        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let transaction = self.connection.unchecked_transaction()?;
         let has_references: bool = transaction.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM node_references WHERE source_id = ?1
@@ -218,7 +221,7 @@ impl Engine {
         if changed == 0 {
             return Err(Error::NodeNotFound(id));
         }
-        transaction.commit()?;
+        commit_mutation(transaction, captured, self.sync_device_id)?;
         Ok(())
     }
 
@@ -227,7 +230,8 @@ impl Engine {
     /// Descendants are not rewritten. The engine validates the destination,
     /// rejects cycles, and preserves deterministic sibling order.
     pub fn move_node(&mut self, id: NodeId, destination: Destination) -> Result<()> {
-        let transaction = self.connection.transaction()?;
+        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let transaction = self.connection.unchecked_transaction()?;
         let moved = stored_node(&transaction, id)?.ok_or(Error::NodeNotFound(id))?;
         ensure_parent_exists(&transaction, destination.parent_id)?;
         ensure_move_is_acyclic(&transaction, id, destination.parent_id)?;
@@ -243,7 +247,7 @@ impl Engine {
                     parent_id: destination.parent_id,
                 });
             }
-            transaction.commit()?;
+            commit_mutation(transaction, captured, self.sync_device_id)?;
             return Ok(());
         }
 
@@ -259,7 +263,7 @@ impl Engine {
             "UPDATE nodes SET parent_id = ?1, position = ?2 WHERE id = ?3",
             params![parent_bytes, position, node_id_bytes(&id)],
         )?;
-        transaction.commit()?;
+        commit_mutation(transaction, captured, self.sync_device_id)?;
         Ok(())
     }
 

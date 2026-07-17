@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use vrac::{
     CreateNode, Destination, Engine, GenerateShape, MAX_PAGE_SIZE, Page, Placement, ReferenceInput,
+    SyncDeviceId,
 };
 
 const DEFAULT_NODE_COUNT: u64 = 5_000_000;
@@ -38,7 +39,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     drop(engine);
 
     let started = Instant::now();
-    let mut engine = Engine::open(&path)?;
+    let mut engine = Engine::open_synced(&path, SyncDeviceId::from_bytes([1; 16]))?;
     print_duration("reopen", started.elapsed());
 
     let started = Instant::now();
@@ -262,6 +263,18 @@ fn main() -> Result<(), Box<dyn StdError>> {
         Ok(())
     })?;
     record_interactive("deep_path_p95", deep_path_p95)?;
+
+    let started = Instant::now();
+    let mut package_count = 0_u64;
+    let mut package_bytes = 0_u64;
+    while let Some(package) = engine.next_sync_package()? {
+        package_count += 1;
+        package_bytes += u64::try_from(package.bytes().len())?;
+        engine.confirm_sync_package(&package)?;
+    }
+    print_duration("sync_package_export", started.elapsed());
+    println!("sync_packages\t{package_count}\tcount");
+    println!("sync_package_bytes\t{package_bytes}\tbytes");
 
     let started = Instant::now();
     let report = engine.check()?;

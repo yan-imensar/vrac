@@ -94,7 +94,7 @@ fn documented_engine_and_integrity_exit_codes_are_stable() {
 
     std::fs::write(
         database,
-        include_bytes!("fixtures/rootless-cycle.vrac").as_slice(),
+        include_bytes!("fixtures/rootless-cycle-v3.vrac").as_slice(),
     )
     .expect("copy invalid workspace fixture");
 

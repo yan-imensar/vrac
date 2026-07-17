@@ -40,15 +40,15 @@ fn create(engine: &mut Engine, text: &str) -> Node {
 }
 
 #[test]
-fn the_frozen_v2_fixture_reopens_with_resolved_content() {
+fn the_frozen_v3_fixture_reopens_with_resolved_content() {
     let database = TestDatabase::new();
     std::fs::write(
         database.path(),
-        include_bytes!("fixtures/v2.vrac").as_slice(),
+        include_bytes!("fixtures/v3.vrac").as_slice(),
     )
-    .expect("copy v2 fixture");
+    .expect("copy v3 fixture");
 
-    let engine = Engine::open(database.path()).expect("open v2 fixture");
+    let engine = Engine::open(database.path()).expect("open v3 fixture");
     let roots = engine
         .children(None, Page::default())
         .expect("read fixture roots")
@@ -65,6 +65,21 @@ fn the_frozen_v2_fixture_reopens_with_resolved_content() {
     assert_eq!(children[0].references[0].target_id, roots[0].id);
     assert_eq!(children[0].references[0].target_text, "Project X");
     assert!(engine.check().expect("check fixture").is_ok());
+}
+
+#[test]
+fn the_preproduction_v2_fixture_is_preserved_but_not_migrated() {
+    let database = TestDatabase::new();
+    std::fs::write(
+        database.path(),
+        include_bytes!("fixtures/v2.vrac").as_slice(),
+    )
+    .expect("copy v2 fixture");
+
+    assert!(matches!(
+        Engine::open(database.path()),
+        Err(Error::UnsupportedSchemaVersion(2))
+    ));
 }
 
 #[test]

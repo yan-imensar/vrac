@@ -28,6 +28,7 @@ mod db;
 mod nodes;
 mod order;
 mod schema;
+mod sync;
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -37,6 +38,9 @@ pub use db::Engine;
 
 /// Number of bytes in a node identifier.
 pub const NODE_ID_LENGTH: usize = 16;
+
+/// Number of bytes in a synchronization device identifier.
+pub const SYNC_DEVICE_ID_LENGTH: usize = 16;
 
 /// Default result page size.
 pub const DEFAULT_PAGE_SIZE: usize = 100;
@@ -104,6 +108,81 @@ impl fmt::Display for ParseNodeIdError {
 }
 
 impl StdError for ParseNodeIdError {}
+
+/// Stable identity of one local application installation.
+///
+/// Clients generate it once and keep it in their local application data. It
+/// must not be copied with a workspace or stored in a synchronized folder.
+#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SyncDeviceId([u8; SYNC_DEVICE_ID_LENGTH]);
+
+impl SyncDeviceId {
+    /// Generates a cryptographically random device identifier.
+    pub fn generate() -> Result<Self> {
+        let mut bytes = [0_u8; SYNC_DEVICE_ID_LENGTH];
+        getrandom::fill(&mut bytes).map_err(|error| Error::Randomness(error.to_string()))?;
+        Ok(Self(bytes))
+    }
+
+    /// Creates an identifier from its canonical bytes.
+    pub fn from_bytes(bytes: [u8; SYNC_DEVICE_ID_LENGTH]) -> Self {
+        Self(bytes)
+    }
+
+    /// Returns the canonical bytes.
+    pub fn as_bytes(&self) -> &[u8; SYNC_DEVICE_ID_LENGTH] {
+        &self.0
+    }
+}
+
+impl fmt::Display for SyncDeviceId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for SyncDeviceId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "SyncDeviceId(\"{self}\")")
+    }
+}
+
+/// One immutable opaque package ready for a synchronization provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutgoingSyncPackage {
+    device_id: SyncDeviceId,
+    first_sequence: u64,
+    last_sequence: u64,
+    id: [u8; 32],
+    bytes: Vec<u8>,
+}
+
+impl OutgoingSyncPackage {
+    /// Stable filename suitable for an immutable provider object.
+    pub fn file_name(&self) -> String {
+        format!(
+            "{}-{:020}-{:020}.vrac-sync",
+            self.device_id, self.first_sequence, self.last_sequence
+        )
+    }
+
+    /// Complete opaque package bytes.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Outcome of importing one synchronization package.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncApply {
+    /// The package was applied atomically.
+    Applied,
+    /// The package was already represented by the local workspace.
+    AlreadyApplied,
+}
 
 /// A text item in the Vrac tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -361,6 +440,32 @@ pub enum Error {
     CheckpointDestinationExists,
     /// A generated checkpoint failed its complete integrity validation.
     InvalidCheckpoint(CheckReport),
+    /// Synchronization was requested on an engine opened without a device ID.
+    SyncNotEnabled,
+    /// A synchronization package is malformed or corrupted.
+    InvalidSyncPackage(String),
+    /// A package belongs to another workspace.
+    SyncWorkspaceMismatch,
+    /// A package is missing an earlier package from the same device.
+    SyncPackageOutOfOrder {
+        /// Device whose stream has a gap.
+        device_id: SyncDeviceId,
+        /// Next sequence expected locally.
+        expected: u64,
+        /// First sequence in the received package.
+        received: u64,
+    },
+    /// Applying a package would overwrite a concurrent local change.
+    SyncConflict {
+        /// Device that produced the conflicting package.
+        device_id: SyncDeviceId,
+        /// First transaction in the conflicting package.
+        first_sequence: u64,
+        /// Last transaction in the conflicting package.
+        last_sequence: u64,
+    },
+    /// Secure random bytes could not be obtained.
+    Randomness(String),
     /// A filesystem operation outside SQLite failed.
     Io(std::io::Error),
 }
@@ -425,6 +530,32 @@ impl fmt::Display for Error {
                 "checkpoint validation reported {} integrity issues",
                 report.issues.len()
             ),
+            Self::SyncNotEnabled => formatter.write_str(
+                "synchronization requires opening the workspace with a device identifier",
+            ),
+            Self::InvalidSyncPackage(reason) => {
+                write!(formatter, "invalid synchronization package: {reason}")
+            }
+            Self::SyncWorkspaceMismatch => {
+                formatter.write_str("synchronization package belongs to another workspace")
+            }
+            Self::SyncPackageOutOfOrder {
+                device_id,
+                expected,
+                received,
+            } => write!(
+                formatter,
+                "synchronization package from {device_id} starts at {received}, expected {expected}"
+            ),
+            Self::SyncConflict {
+                device_id,
+                first_sequence,
+                last_sequence,
+            } => write!(
+                formatter,
+                "synchronization conflict with {device_id} package {first_sequence}..={last_sequence}"
+            ),
+            Self::Randomness(reason) => write!(formatter, "secure randomness failed: {reason}"),
             Self::Io(error) => write!(formatter, "I/O error: {error}"),
         }
     }

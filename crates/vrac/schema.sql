@@ -33,3 +33,36 @@ CREATE TABLE node_references (
 
 CREATE INDEX node_references_by_target
     ON node_references(target_id, source_id, start_byte);
+
+CREATE TABLE workspace (
+    singleton    INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+    workspace_id BLOB NOT NULL UNIQUE
+                 CHECK (typeof(workspace_id) = 'blob' AND length(workspace_id) = 16)
+) STRICT;
+
+CREATE TABLE sync_devices (
+    device_id       BLOB PRIMARY KEY NOT NULL
+                    CHECK (typeof(device_id) = 'blob' AND length(device_id) = 16),
+    next_sequence   INTEGER CHECK (next_sequence IS NULL OR next_sequence > 0),
+    applied_sequence INTEGER NOT NULL DEFAULT 0 CHECK (applied_sequence >= 0),
+    applied_package BLOB CHECK (applied_package IS NULL OR
+                                (typeof(applied_package) = 'blob' AND
+                                 length(applied_package) = 32))
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE sync_outbox (
+    device_id BLOB NOT NULL REFERENCES sync_devices(device_id) ON DELETE CASCADE,
+    sequence  INTEGER NOT NULL CHECK (sequence > 0),
+    changeset BLOB NOT NULL CHECK (typeof(changeset) = 'blob' AND length(changeset) > 0),
+    PRIMARY KEY (device_id, sequence)
+) STRICT, WITHOUT ROWID;
+
+CREATE TABLE sync_batch (
+    device_id  BLOB PRIMARY KEY NOT NULL
+               REFERENCES sync_devices(device_id) ON DELETE CASCADE,
+    first_sequence INTEGER NOT NULL CHECK (first_sequence > 0),
+    last_sequence  INTEGER NOT NULL CHECK (last_sequence >= first_sequence),
+    package_id BLOB NOT NULL UNIQUE
+               CHECK (typeof(package_id) = 'blob' AND length(package_id) = 32),
+    bytes      BLOB NOT NULL CHECK (typeof(bytes) = 'blob' AND length(bytes) > 0)
+) STRICT, WITHOUT ROWID;

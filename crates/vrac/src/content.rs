@@ -4,6 +4,7 @@ use rusqlite::{Connection, params, params_from_iter};
 
 use crate::db::Engine;
 use crate::nodes::{decode_id, node_exists, node_id_bytes};
+use crate::sync::{capture_session, commit_mutation};
 use crate::{CheckIssue, Error, Node, NodeId, NodeReference, ReferenceInput, Result};
 
 const HYDRATION_BATCH_SIZE: usize = 1_000;
@@ -38,7 +39,8 @@ impl Engine {
         text: String,
         references: Vec<ReferenceInput>,
     ) -> Result<()> {
-        let transaction = self.connection.transaction()?;
+        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let transaction = self.connection.unchecked_transaction()?;
         if !node_exists(&transaction, id)? {
             return Err(Error::NodeNotFound(id));
         }
@@ -48,7 +50,7 @@ impl Engine {
             params![&text, node_id_bytes(&id)],
         )?;
         replace_references(&transaction, id, &references)?;
-        transaction.commit()?;
+        commit_mutation(transaction, captured, self.sync_device_id)?;
         Ok(())
     }
 
@@ -58,12 +60,13 @@ impl Engine {
     /// deduplicated. Empty tags, whitespace, and `#` are rejected.
     pub fn set_tags(&mut self, id: NodeId, tags: Vec<String>) -> Result<()> {
         let tags = canonicalize_tags(tags)?;
-        let transaction = self.connection.transaction()?;
+        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let transaction = self.connection.unchecked_transaction()?;
         if !node_exists(&transaction, id)? {
             return Err(Error::NodeNotFound(id));
         }
         replace_tags(&transaction, id, &tags)?;
-        transaction.commit()?;
+        commit_mutation(transaction, captured, self.sync_device_id)?;
         Ok(())
     }
 }
