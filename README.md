@@ -59,6 +59,22 @@ validates a companion
 `*.checkpoint.vrac` file without applying the interactive latency budget to
 that background operation.
 
+The same generated workspace drives a bounded-memory regression scenario. It
+repeats the frontend's root page, metadata-rich page, indexed search, and deep
+path reads without retaining their results:
+
+```sh
+cargo run --release -p vrac-cli --example memory -- \
+  /local/path/vrac-5m-wide.vrac
+```
+
+On Unix systems, including macOS, iOS, Linux, and Android, the scenario reads
+the process peak resident set from the operating system and enforces a 32 MiB
+growth budget. This is an engine budget, not the total Tauri/WebView process
+budget. Full integrity checks remain separate because they traverse the entire
+workspace; they must not run on the UI thread. Actual packaged applications
+will receive device-level memory baselines before mobile release.
+
 ## Checkpoints
 
 `Engine::checkpoint(destination)` creates a complete SQLite snapshot through

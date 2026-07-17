@@ -13,4 +13,5 @@ doc = false
 vrac = { path = "../vrac" }
 
 [dev-dependencies]
+libc = "0.2"
 tempfile = "3.27.0"
