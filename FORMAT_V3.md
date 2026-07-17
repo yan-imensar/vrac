@@ -2,7 +2,7 @@
 
 Format v3 adds the minimum durable state required to exchange changes between
 one person's devices. It keeps the v2 node, tag, and reference model unchanged.
-Format v3 is the only format accepted by the current pre-production engine.
+Format v3 is an immutable historical pre-production format.
 
 ## File identity
 
@@ -145,9 +145,8 @@ local device ID, then applies only packages beyond the checkpoint frontiers.
 ## Development version policy
 
 The immutable v2 fixture and documentation remain in the repository. No v2 to
-v3 migration is shipped because the product has no production workspace yet;
-the current engine rejects older formats instead of carrying unused migration
-code.
+v3 migration is shipped because the product had no production workspace at
+that boundary; the current engine still rejects v2.
 
 The committed [`v3.vrac`](crates/vrac/tests/fixtures/v3.vrac) sample is the
 immutable v3 format fixture.

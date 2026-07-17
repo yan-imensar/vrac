@@ -482,6 +482,8 @@ pub enum Error {
     ReferenceTargetNotFound(NodeId),
     /// A plain text replacement would discard outgoing references.
     NodeHasReferences(NodeId),
+    /// A node in the requested subtree is referenced from outside it.
+    NodeReferenced(NodeId),
     /// The checkpoint destination already exists and was not modified.
     CheckpointDestinationExists,
     /// A generated checkpoint failed its complete integrity validation.
@@ -582,6 +584,12 @@ impl fmt::Display for Error {
                 write!(
                     formatter,
                     "node {id} has outgoing references; replace its content instead"
+                )
+            }
+            Self::NodeReferenced(id) => {
+                write!(
+                    formatter,
+                    "node {id} is referenced from outside its subtree"
                 )
             }
             Self::CheckpointDestinationExists => {

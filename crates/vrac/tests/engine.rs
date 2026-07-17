@@ -91,12 +91,12 @@ fn new_databases_have_stable_format_markers_and_wal() {
         .expect("read journal mode");
 
     assert_eq!(application_id, VRAC_APPLICATION_ID);
-    assert_eq!(schema_version, 3);
+    assert_eq!(schema_version, 4);
     assert_eq!(journal_mode, "wal");
 }
 
 #[test]
-fn valid_unmarked_v3_databases_are_adopted() {
+fn valid_unmarked_current_databases_are_adopted() {
     let database = TestDatabase::new();
     let engine = Engine::open(database.path()).expect("open database");
     drop(engine);

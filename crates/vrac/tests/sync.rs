@@ -112,10 +112,31 @@ fn two_devices_exchange_complete_idempotent_product_changes() {
     let synchronized = second.node(decision.id).unwrap().unwrap();
     assert_eq!(synchronized.tags, ["decision", "meeting"]);
     assert_eq!(synchronized.references[0].target_text, "Project Y");
+    assert_eq!(second.search("decision", 8).unwrap()[0].id, decision.id);
     first
         .confirm_sync_package(&package)
         .expect("confirm package");
     assert!(first.next_sync_package().unwrap().is_none());
+}
+
+#[test]
+fn synchronized_deletions_update_the_local_search_index() {
+    let directory = tempdir().expect("create temporary directory");
+    let first_path = directory.path().join("first.vrac");
+    let second_path = directory.path().join("second.vrac");
+    let mut first = Engine::open_synced(&first_path, device(1)).unwrap();
+    let node = first
+        .create_node(CreateNode::new("Temporary searchable note"))
+        .unwrap();
+    flush(&mut first);
+    first.checkpoint(&second_path).unwrap();
+    let mut second = Engine::open_synced(&second_path, device(2)).unwrap();
+    assert_eq!(second.search("temporary", 8).unwrap()[0].id, node.id);
+
+    first.delete_node(node.id).unwrap();
+    let package = flush(&mut first);
+    second.apply_sync_package(&package).unwrap();
+    assert!(second.search("temporary", 8).unwrap().is_empty());
 }
 
 #[test]

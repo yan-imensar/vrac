@@ -192,6 +192,34 @@ fn main() -> Result<(), Box<dyn StdError>> {
     })?;
     record_interactive("node_with_metadata_p95", node_p95)?;
 
+    let search_target = metadata_nodes[42].id;
+    let search_p95 = measure_p95(|| {
+        let nodes = engine.search("decision 42", 8)?;
+        if nodes.first().is_none_or(|node| node.id != search_target) {
+            return Err(vrac::Error::InvalidDatabase(
+                "the search performance probe was not found".into(),
+            ));
+        }
+        Ok(())
+    })?;
+    record_interactive("search_p95", search_p95)?;
+
+    let mut deletion_nodes = Vec::with_capacity(SAMPLE_COUNT);
+    for index in 0..SAMPLE_COUNT {
+        let mut input = CreateNode::new(format!("Deletion probe {index}"));
+        input.parent_id = Some(created.id);
+        deletion_nodes.push(engine.create_node(input)?);
+    }
+    let mut delete_samples = Vec::with_capacity(SAMPLE_COUNT);
+    for node in deletion_nodes {
+        let started = Instant::now();
+        if engine.delete_node(node.id)? != 1 {
+            return Err(IoError::other("a deletion probe removed more than one node").into());
+        }
+        delete_samples.push(started.elapsed());
+    }
+    record_interactive("delete_leaf_p95", percentile_95(&mut delete_samples))?;
+
     let metadata_page = engine.children(
         Some(created.id),
         Page {

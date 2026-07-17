@@ -267,6 +267,97 @@ impl Engine {
         Ok(())
     }
 
+    /// Deletes a node and all its descendants atomically.
+    ///
+    /// The operation is rejected when a node in the subtree is referenced by
+    /// a node outside it. References contained inside the subtree disappear
+    /// with their source nodes.
+    pub fn delete_node(&mut self, id: NodeId) -> Result<u64> {
+        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let transaction = self.connection.unchecked_transaction()?;
+        if !node_exists(&transaction, id)? {
+            return Err(Error::NodeNotFound(id));
+        }
+
+        let external_target = transaction
+            .query_row(
+                "WITH RECURSIVE subtree(id) AS (
+                     SELECT ?1
+                     UNION
+                     SELECT nodes.id FROM nodes JOIN subtree ON nodes.parent_id = subtree.id
+                 )
+                 SELECT refs.target_id
+                 FROM node_references AS refs
+                 JOIN subtree AS targets ON targets.id = refs.target_id
+                 LEFT JOIN subtree AS sources ON sources.id = refs.source_id
+                 WHERE sources.id IS NULL
+                 LIMIT 1",
+                params![node_id_bytes(&id)],
+                |row| row.get::<_, Vec<u8>>(0),
+            )
+            .optional()?
+            .map(decode_id)
+            .transpose()?;
+        if let Some(target_id) = external_target {
+            return Err(Error::NodeReferenced(target_id));
+        }
+
+        let count: i64 = transaction.query_row(
+            "WITH RECURSIVE subtree(id) AS (
+                 SELECT ?1
+                 UNION
+                 SELECT nodes.id FROM nodes JOIN subtree ON nodes.parent_id = subtree.id
+             )
+             SELECT COUNT(*) FROM subtree",
+            params![node_id_bytes(&id)],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            "WITH RECURSIVE subtree(id) AS (
+                 SELECT ?1
+                 UNION
+                 SELECT nodes.id FROM nodes JOIN subtree ON nodes.parent_id = subtree.id
+             )
+             DELETE FROM nodes WHERE id IN (SELECT id FROM subtree)",
+            params![node_id_bytes(&id)],
+        )?;
+        commit_mutation(transaction, captured, self.sync_device_id)?;
+        u64::try_from(count)
+            .map_err(|_| Error::InvalidDatabase("SQLite returned a negative delete count".into()))
+    }
+
+    /// Searches node text using a bounded full-text prefix query.
+    ///
+    /// Empty or punctuation-only queries return no results. FTS stops as soon
+    /// as the requested result limit is reached.
+    pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Node>> {
+        validate_search_limit(limit)?;
+        let Some(query) = search_query(query) else {
+            return Ok(Vec::new());
+        };
+        let limit = i64::try_from(limit).map_err(|_| Error::InvalidPageLimit {
+            limit,
+            maximum: MAX_PAGE_SIZE,
+        })?;
+        let mut statement = self.connection.prepare_cached(
+            "SELECT nodes.id, nodes.parent_id, nodes.position, nodes.text
+             FROM node_search
+             JOIN nodes ON nodes.rowid = node_search.rowid
+             WHERE node_search MATCH ?1
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![query, limit], raw_node)?;
+        let stored = rows
+            .map(|row| row.map_err(Error::from).and_then(decode_stored_node))
+            .collect::<Result<Vec<_>>>()?;
+        let mut nodes = stored
+            .into_iter()
+            .map(|stored| stored.node)
+            .collect::<Vec<_>>();
+        hydrate_nodes(&self.connection, &mut nodes)?;
+        Ok(nodes)
+    }
+
     /// Generates performance or test data in a single transaction.
     ///
     /// This utility does not participate in checkpoint restoration or normal
@@ -399,6 +490,25 @@ fn ensure_parent_exists(connection: &Connection, parent_id: Option<NodeId>) -> R
         return Err(Error::ParentNotFound(parent_id));
     }
     Ok(())
+}
+
+fn validate_search_limit(limit: usize) -> Result<()> {
+    if limit == 0 || limit > MAX_PAGE_SIZE {
+        return Err(Error::InvalidPageLimit {
+            limit,
+            maximum: MAX_PAGE_SIZE,
+        });
+    }
+    Ok(())
+}
+
+fn search_query(value: &str) -> Option<String> {
+    let terms = value
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|term| term.chars().count() >= 2)
+        .map(|term| format!("\"{term}\"*"))
+        .collect::<Vec<_>>();
+    (!terms.is_empty()).then(|| terms.join(" AND "))
 }
 
 fn next_position(connection: &Connection, parent_id: Option<NodeId>) -> Result<i64> {

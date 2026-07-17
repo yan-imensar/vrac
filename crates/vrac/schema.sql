@@ -66,3 +66,26 @@ CREATE TABLE sync_batch (
                CHECK (typeof(package_id) = 'blob' AND length(package_id) = 32),
     bytes      BLOB NOT NULL CHECK (typeof(bytes) = 'blob' AND length(bytes) > 0)
 ) STRICT, WITHOUT ROWID;
+
+CREATE VIRTUAL TABLE node_search USING fts5(
+    text,
+    content = 'nodes',
+    content_rowid = 'rowid',
+    tokenize = 'unicode61 remove_diacritics 2',
+    prefix = '2 3'
+);
+
+CREATE TRIGGER node_search_insert AFTER INSERT ON nodes BEGIN
+    INSERT INTO node_search(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+CREATE TRIGGER node_search_delete AFTER DELETE ON nodes BEGIN
+    INSERT INTO node_search(node_search, rowid, text)
+    VALUES ('delete', old.rowid, old.text);
+END;
+
+CREATE TRIGGER node_search_update AFTER UPDATE OF text ON nodes BEGIN
+    INSERT INTO node_search(node_search, rowid, text)
+    VALUES ('delete', old.rowid, old.text);
+    INSERT INTO node_search(rowid, text) VALUES (new.rowid, new.text);
+END;

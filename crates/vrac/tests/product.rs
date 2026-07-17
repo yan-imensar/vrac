@@ -40,7 +40,7 @@ fn create(engine: &mut Engine, text: &str) -> Node {
 }
 
 #[test]
-fn the_frozen_v3_fixture_reopens_with_resolved_content() {
+fn the_frozen_v3_fixture_is_preserved_but_not_migrated() {
     let database = TestDatabase::new();
     std::fs::write(
         database.path(),
@@ -48,23 +48,81 @@ fn the_frozen_v3_fixture_reopens_with_resolved_content() {
     )
     .expect("copy v3 fixture");
 
-    let engine = Engine::open(database.path()).expect("open v3 fixture");
-    let roots = engine
-        .children(None, Page::default())
-        .expect("read fixture roots")
-        .nodes;
-    assert_eq!(roots.len(), 1);
-    assert_eq!(roots[0].text, "Project X");
-    assert_eq!(roots[0].tags, ["project"]);
-    let children = engine
-        .children(Some(roots[0].id), Page::default())
-        .expect("read fixture children")
-        .nodes;
-    assert_eq!(children.len(), 1);
-    assert_eq!(children[0].tags, ["decision", "meeting"]);
-    assert_eq!(children[0].references[0].target_id, roots[0].id);
-    assert_eq!(children[0].references[0].target_text, "Project X");
-    assert!(engine.check().expect("check fixture").is_ok());
+    assert!(matches!(
+        Engine::open(database.path()),
+        Err(Error::UnsupportedSchemaVersion(3))
+    ));
+}
+
+#[test]
+fn search_is_bounded_prefix_based_and_tracks_text_changes() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let project = create(&mut engine, "Projet Éléphant");
+    let other = create(&mut engine, "Unrelated note");
+
+    assert_eq!(engine.search("pro élé", 8).unwrap()[0].id, project.id);
+    assert!(engine.search("[[]]", 8).unwrap().is_empty());
+    assert!(engine.search("p", 8).unwrap().is_empty());
+    assert!(matches!(
+        engine.search("project", 0),
+        Err(Error::InvalidPageLimit { .. })
+    ));
+
+    engine
+        .set_text(project.id, "Archived topic".into())
+        .expect("rename indexed node");
+    assert!(engine.search("projet", 8).unwrap().is_empty());
+    assert_eq!(engine.search("arch", 8).unwrap()[0].id, project.id);
+
+    engine.delete_node(other.id).expect("delete indexed node");
+    assert!(engine.search("unrelated", 8).unwrap().is_empty());
+}
+
+#[test]
+fn deleting_a_subtree_is_atomic_and_preserves_external_references() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let root = create(&mut engine, "Project");
+    let mut child_input = CreateNode::new("Decision");
+    child_input.parent_id = Some(root.id);
+    let child = engine.create_node(child_input).expect("create child");
+    let source_text = "See [[Decision]]";
+    let mut source_input = CreateNode::new(source_text);
+    source_input.references = vec![reference(source_text, "Decision", child.id)];
+    let source = engine
+        .create_node(source_input)
+        .expect("create external reference");
+
+    assert!(matches!(
+        engine.delete_node(root.id),
+        Err(Error::NodeReferenced(id)) if id == child.id
+    ));
+    assert!(engine.node(root.id).unwrap().is_some());
+    assert!(engine.node(child.id).unwrap().is_some());
+
+    engine
+        .set_content(source.id, "Reference removed".into(), Vec::new())
+        .expect("remove external reference");
+    assert_eq!(engine.delete_node(root.id).expect("delete subtree"), 2);
+    assert!(engine.node(root.id).unwrap().is_none());
+    assert!(engine.node(child.id).unwrap().is_none());
+    assert!(engine.node(source.id).unwrap().is_some());
+}
+
+#[test]
+fn references_inside_a_deleted_subtree_do_not_block_deletion() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let root = create(&mut engine, "Project");
+    let text = "Self [[Project]]";
+    engine
+        .set_content(
+            root.id,
+            text.into(),
+            vec![reference(text, "Project", root.id)],
+        )
+        .expect("create internal reference");
+
+    assert_eq!(engine.delete_node(root.id).expect("delete subtree"), 1);
+    assert!(engine.check().unwrap().is_ok());
 }
 
 #[test]

@@ -6,7 +6,7 @@ Tauri/Svelte product slice.
 
 Contribution rules are documented in [`AGENTS.md`](AGENTS.md).
 The current SQLite workspace format is documented in
-[`FORMAT_V3.md`](FORMAT_V3.md).
+[`FORMAT_V4.md`](FORMAT_V4.md).
 
 ## Layout
 
@@ -64,7 +64,7 @@ that background operation.
 `Engine::checkpoint(destination)` creates a complete SQLite snapshot through
 SQLite's online backup API. It validates the schema and all integrity rules
 before publishing the destination, never copies an open database or its WAL,
-and never overwrites an existing file. The resulting file is an ordinary v3
+and never overwrites an existing file. The resulting file is an ordinary v4
 workspace that can be opened directly.
 
 Checkpoint creation is synchronous and proportional to the complete workspace
@@ -101,17 +101,18 @@ only converts command inputs and outputs. `Cursor` implements text conversion
 as an opaque token that can cross IPC unchanged and be parsed for the next page.
 The token is temporary continuation state, not workspace data.
 
-The initial interface deliberately implements only the dark outline surface,
-lazy branch expansion, text editing, focused zoom, bounded pagination, and a
-small command palette. Keyboard shortcuts and textual lookup dispatch the same
-command definitions. The POC's Vim modes, virtual list, undo history, search,
-backlinks, mobile controls, and maintenance commands are not part of this first
-slice.
+The interface implements the dark outline surface, lazy branch expansion,
+text editing, focused zoom, bounded pagination, node search, deletion, and
+indentation. A central, optional Vim controller drives normal and insert modes;
+the bottom status control toggles it without changing engine behavior. `:` and
+`/` expand the same bottom area for commands and indexed node search. Backlinks,
+undo history, virtual lists, mobile controls, and maintenance commands remain
+outside this slice.
 
-Tauri owns one synchronous engine on one dedicated standard thread. Four thin
-commands adapt children, creation, text updates, and paths; they contain no SQL
-or product rules. The workspace is created automatically in the application's
-data directory.
+Tauri owns one synchronous engine on one dedicated standard thread. Thin
+commands adapt children, creation, text updates, paths, moves, deletion, and
+search; they contain no SQL or product rules. The workspace is created
+automatically in the application's data directory.
 
 ## CLI
 
@@ -163,12 +164,11 @@ diagnostics to standard error. Its exit codes are:
 
 ## Database format
 
-A Vrac workspace is an ordinary SQLite file. Current format version 3 uses
+A Vrac workspace is an ordinary SQLite file. Current format version 4 uses
 `PRAGMA application_id = 0x56524143` (`VRAC` in ASCII) and
-`PRAGMA user_version = 3`. The engine validates both the marker and the exact
-schema before accepting an existing file. Files from another schema version
-are rejected. Valid unmarked version 3 databases are marked only after
-validation.
+`PRAGMA user_version = 4`. The engine validates both the marker and the exact
+schema before accepting an existing file. Older pre-production formats remain
+unsupported. Valid unmarked current databases are marked only after validation.
 
 Nodes may carry multiple canonical tags outside their text and stable inline
 references whose displayed target text follows target renames. Root-level
@@ -178,4 +178,4 @@ also provides a root-to-node path read for focused navigation.
 File-backed workspaces use foreign-key enforcement, WAL journaling, and
 `synchronous = FULL`. The current canonical schema is
 [`crates/vrac/schema.sql`](crates/vrac/schema.sql); its compatibility rules are
-defined in [`FORMAT_V3.md`](FORMAT_V3.md).
+defined in [`FORMAT_V4.md`](FORMAT_V4.md).

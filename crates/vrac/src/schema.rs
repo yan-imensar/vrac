@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::{Error, Result};
 
 pub(crate) const APPLICATION_ID: i64 = 0x5652_4143;
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA_SQL: &str = include_str!("../schema.sql");
 
@@ -27,6 +27,30 @@ const SCHEMA_OBJECTS: &[SchemaObject] = &[
         name: "node_references_by_target",
         table: "node_references",
         statement_index: 5,
+    },
+    SchemaObject {
+        kind: "table",
+        name: "node_search",
+        table: "node_search",
+        statement_index: 10,
+    },
+    SchemaObject {
+        kind: "trigger",
+        name: "node_search_delete",
+        table: "nodes",
+        statement_index: 12,
+    },
+    SchemaObject {
+        kind: "trigger",
+        name: "node_search_insert",
+        table: "nodes",
+        statement_index: 11,
+    },
+    SchemaObject {
+        kind: "trigger",
+        name: "node_search_update",
+        table: "nodes",
+        statement_index: 13,
     },
     SchemaObject {
         kind: "table",
@@ -168,12 +192,9 @@ fn validate_schema(
     schema_sql: &str,
     expected_objects: &[SchemaObject],
 ) -> Result<()> {
-    let expected_statements: Vec<String> = schema_sql
-        .split(';')
-        .filter_map(|statement| {
-            let statement = statement.trim();
-            (!statement.is_empty()).then(|| normalize_sql(statement))
-        })
+    let expected_statements: Vec<String> = schema_statements(schema_sql)
+        .into_iter()
+        .map(normalize_sql)
         .collect();
     if expected_statements.len() != expected_objects.len() {
         return Err(Error::InvalidDatabase(
@@ -185,6 +206,8 @@ fn validate_schema(
         "SELECT type, name, tbl_name, sql
          FROM sqlite_schema
          WHERE name NOT LIKE 'sqlite_%'
+           AND name NOT IN ('node_search_config', 'node_search_data',
+                            'node_search_docsize', 'node_search_idx')
          ORDER BY name",
     )?;
     let rows = statement.query_map([], |row| {
@@ -229,5 +252,31 @@ fn validate_schema(
 }
 
 fn normalize_sql(sql: &str) -> String {
-    sql.split_whitespace().collect::<Vec<_>>().join(" ")
+    sql.trim_end_matches(';')
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn schema_statements(sql: &str) -> Vec<&str> {
+    let mut statements = Vec::new();
+    let mut start = 0;
+    let mut offset = 0;
+    let mut in_trigger = false;
+    for line in sql.split_inclusive('\n') {
+        offset += line.len();
+        let trimmed = line.trim();
+        if trimmed.starts_with("CREATE TRIGGER") {
+            in_trigger = true;
+        }
+        if (!in_trigger && trimmed.ends_with(';')) || (in_trigger && trimmed == "END;") {
+            statements.push(sql[start..offset].trim());
+            start = offset;
+            in_trigger = false;
+        }
+    }
+    if !sql[start..].trim().is_empty() {
+        statements.push(sql[start..].trim());
+    }
+    statements
 }
