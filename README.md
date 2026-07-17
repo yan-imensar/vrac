@@ -1,9 +1,8 @@
 # Vrac
 
 Vrac is a local-first outliner designed for fast capture and mental offloading.
-The repository contains the v0.1 Rust engine and its CLI. The Tauri/Svelte
-interface remains outside the critical path until this engine contract is
-validated in real use.
+The repository contains the v0.1 Rust engine, its CLI, and the first minimal
+Tauri/Svelte product slice.
 
 Contribution rules are documented in [`AGENTS.md`](AGENTS.md).
 The current SQLite workspace format is documented in
@@ -14,7 +13,8 @@ The current SQLite workspace format is documented in
 ```text
 crates/vrac       engine library, model, and SQLite storage
 crates/vrac-cli   CLI client, producing the `vrac` binary
-src-tauri         future desktop client, not connected to the engine yet
+src               minimal Svelte outliner
+src-tauri         thin Tauri client of the engine
 ```
 
 ## Development
@@ -23,6 +23,9 @@ src-tauri         future desktop client, not connected to the engine yet
 cargo fmt --all --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+pnpm check
+pnpm build
+(cd src-tauri && cargo test && cargo clippy --all-targets -- -D warnings)
 ```
 
 Build the optimized CLI with:
@@ -97,6 +100,18 @@ the library. Nodes and identifiers remain engine types; a thin Tauri adapter
 only converts command inputs and outputs. `Cursor` implements text conversion
 as an opaque token that can cross IPC unchanged and be parsed for the next page.
 The token is temporary continuation state, not workspace data.
+
+The initial interface deliberately implements only the dark outline surface,
+lazy branch expansion, text editing, focused zoom, bounded pagination, and a
+small command palette. Keyboard shortcuts and textual lookup dispatch the same
+command definitions. The POC's Vim modes, virtual list, undo history, search,
+backlinks, mobile controls, and maintenance commands are not part of this first
+slice.
+
+Tauri owns one synchronous engine on one dedicated standard thread. Four thin
+commands adapt children, creation, text updates, and paths; they contain no SQL
+or product rules. The workspace is created automatically in the application's
+data directory.
 
 ## CLI
 
