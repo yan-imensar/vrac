@@ -104,8 +104,17 @@ Reopening an active synchronized workspace with `Engine::open` resumes its
 existing capture identity; supplying a different identity is rejected. This
 prevents an ordinary application restart from silently producing
 unsynchronized edits. There is no server, account system, CRDT, or permanent
-event history. Provider scheduling and conflict presentation belong to future
-user interfaces, not to the engine.
+event history.
+
+The current graphical client implements the first provider adapter for iCloud
+Drive. The open SQLite database always remains in local application data.
+Enabling iCloud publishes a validated bootstrap checkpoint and immutable
+packages to the app's ubiquity container; joining streams that checkpoint to a
+new local file and runs a complete integrity check before opening it. Sync runs
+off the UI thread after local edits, when the window regains focus, or on
+request. Apple builds require the `iCloud.com.yanimensar.vrac` container and
+iCloud Documents capability to be enabled for the signed App ID; otherwise the
+workspace panel reports iCloud as unavailable.
 
 ## Graphical client boundary
 
@@ -124,10 +133,16 @@ the bottom status control toggles it without changing engine behavior. `:` and
 undo history, virtual lists, mobile controls, and maintenance commands remain
 outside this slice.
 
+Native `View` menu items control webview display zoom. `File > Workspaces…` and
+`:workspace` open the same small chooser for local workspace creation,
+selection, and iCloud setup. `Default` preserves the original
+`workspace.vrac`; additional workspaces are separate local databases.
+
 Tauri owns one synchronous engine on one dedicated standard thread. Thin
 commands adapt children, creation, text updates, paths, moves, deletion, and
-search; they contain no SQL or product rules. The workspace is created
-automatically in the application's data directory.
+search; they contain no SQL or product rules. Switching workspaces opens the
+new database on that thread, while checkpoint and provider work runs outside
+the UI thread.
 
 ## CLI
 
