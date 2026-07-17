@@ -113,11 +113,10 @@ fn command_add(arguments: &[String]) -> Result<ExitCode, CliError> {
     }
 
     let mut engine = Engine::open(path)?;
-    let node = engine.create_node(CreateNode {
-        parent_id,
-        placement: placement.unwrap_or_default(),
-        text: text_parts.join(" "),
-    })?;
+    let mut input = CreateNode::new(text_parts.join(" "));
+    input.parent_id = parent_id;
+    input.placement = placement.unwrap_or_default();
+    let node = engine.create_node(input)?;
     println!("{}", node.id);
     Ok(ExitCode::SUCCESS)
 }
@@ -303,6 +302,16 @@ fn command_check(arguments: &[String]) -> Result<ExitCode, CliError> {
             ),
             CheckIssue::UnreachableNodes(count) => {
                 println!("unreachable\t{count}");
+            }
+            CheckIssue::NonCanonicalTag { node_id, tag } => {
+                println!("invalid-tag\t{node_id}\t{}", escape_text(&tag));
+            }
+            CheckIssue::InvalidReference {
+                source_id,
+                start,
+                end,
+            } => {
+                println!("invalid-reference\t{source_id}\t{start}\t{end}");
             }
             CheckIssue::AdditionalIssuesOmitted => println!("issues-omitted"),
         }

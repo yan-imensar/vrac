@@ -6,7 +6,8 @@ interface remains outside the critical path until this engine contract is
 validated in real use.
 
 Contribution rules are documented in [`AGENTS.md`](AGENTS.md).
-The frozen SQLite workspace format is documented in [`FORMAT.md`](FORMAT.md).
+The current SQLite workspace format is documented in
+[`FORMAT_V2.md`](FORMAT_V2.md).
 
 ## Layout
 
@@ -80,7 +81,8 @@ clients. `children` reports when its bounded result has more entries;
 The engine returns typed errors and never prints or terminates the process.
 Public error categories cover SQLite failures, invalid or unsupported
 workspaces, missing nodes or parents, invalid relative placement, cycles,
-pagination limits, and performance-data generation limits.
+pagination limits, invalid tags or references, and performance-data generation
+limits.
 
 The CLI writes node data and successful command results to standard output and
 diagnostics to standard error. Its exit codes are:
@@ -94,14 +96,19 @@ diagnostics to standard error. Its exit codes are:
 
 ## Database format
 
-A Vrac workspace is an ordinary SQLite file. Format version 1 uses
+A Vrac workspace is an ordinary SQLite file. Current format version 2 uses
 `PRAGMA application_id = 0x56524143` (`VRAC` in ASCII) and
-`PRAGMA user_version = 1`. The engine validates both the marker and the exact
-schema before accepting an existing file. Valid unmarked version 1 databases
-created before the marker was introduced are marked on their first successful
-open.
+`PRAGMA user_version = 2`. The engine validates both the marker and the exact
+schema before accepting an existing file. Files from another schema version
+are rejected. Valid unmarked version 2 databases are marked only after
+validation.
+
+Nodes may carry multiple canonical tags outside their text and stable inline
+references whose displayed target text follows target renames. Root-level
+nodes remain children of a virtual, unstored product root. The public engine
+also provides a root-to-node path read for focused navigation.
 
 File-backed workspaces use foreign-key enforcement, WAL journaling, and
-`synchronous = FULL`. The canonical schema is
-[`crates/vrac/schema.sql`](crates/vrac/schema.sql); its compatibility and
-migration rules are defined in [`FORMAT.md`](FORMAT.md).
+`synchronous = FULL`. The current canonical schema is
+[`crates/vrac/schema.sql`](crates/vrac/schema.sql); its compatibility rules are
+defined in [`FORMAT_V2.md`](FORMAT_V2.md).

@@ -1,0 +1,188 @@
+use rusqlite::Connection;
+
+use crate::{Error, Result};
+
+pub(crate) const APPLICATION_ID: i64 = 0x5652_4143;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 2;
+
+const SCHEMA_SQL: &str = include_str!("../schema.sql");
+
+#[derive(Clone, Copy)]
+struct SchemaObject {
+    kind: &'static str,
+    name: &'static str,
+    table: &'static str,
+    statement_index: usize,
+}
+
+const SCHEMA_OBJECTS: &[SchemaObject] = &[
+    SchemaObject {
+        kind: "table",
+        name: "node_references",
+        table: "node_references",
+        statement_index: 4,
+    },
+    SchemaObject {
+        kind: "index",
+        name: "node_references_by_target",
+        table: "node_references",
+        statement_index: 5,
+    },
+    SchemaObject {
+        kind: "table",
+        name: "node_tags",
+        table: "node_tags",
+        statement_index: 2,
+    },
+    SchemaObject {
+        kind: "index",
+        name: "node_tags_by_tag",
+        table: "node_tags",
+        statement_index: 3,
+    },
+    SchemaObject {
+        kind: "table",
+        name: "nodes",
+        table: "nodes",
+        statement_index: 0,
+    },
+    SchemaObject {
+        kind: "index",
+        name: "nodes_by_parent",
+        table: "nodes",
+        statement_index: 1,
+    },
+];
+
+pub(crate) fn prepare_database(connection: &mut Connection) -> Result<()> {
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let application_id: i64 =
+        connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+
+    if application_id != 0 && application_id != APPLICATION_ID {
+        return Err(Error::InvalidDatabase(format!(
+            "application ID 0x{application_id:08x} does not identify a Vrac database"
+        )));
+    }
+
+    match version {
+        0 if application_id == 0 && database_is_empty(connection)? => create_database(connection),
+        0 => Err(Error::InvalidDatabase(
+            "the database has no schema version but is not an empty, unmarked file".into(),
+        )),
+        CURRENT_SCHEMA_VERSION => {
+            validate_schema(
+                connection,
+                CURRENT_SCHEMA_VERSION,
+                SCHEMA_SQL,
+                SCHEMA_OBJECTS,
+            )?;
+            mark_database(connection, application_id)
+        }
+        version => Err(Error::UnsupportedSchemaVersion(version)),
+    }
+}
+
+fn create_database(connection: &mut Connection) -> Result<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute_batch(SCHEMA_SQL)?;
+    transaction.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
+    transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
+    validate_schema(
+        &transaction,
+        CURRENT_SCHEMA_VERSION,
+        SCHEMA_SQL,
+        SCHEMA_OBJECTS,
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn mark_database(connection: &mut Connection, application_id: i64) -> Result<()> {
+    if application_id == APPLICATION_ID {
+        return Ok(());
+    }
+    let transaction = connection.transaction()?;
+    transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
+    transaction.commit()?;
+    Ok(())
+}
+
+fn database_is_empty(connection: &Connection) -> Result<bool> {
+    let object_count: i64 = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(object_count == 0)
+}
+
+fn validate_schema(
+    connection: &Connection,
+    version: i64,
+    schema_sql: &str,
+    expected_objects: &[SchemaObject],
+) -> Result<()> {
+    let expected_statements: Vec<String> = schema_sql
+        .split(';')
+        .filter_map(|statement| {
+            let statement = statement.trim();
+            (!statement.is_empty()).then(|| normalize_sql(statement))
+        })
+        .collect();
+    if expected_statements.len() != expected_objects.len() {
+        return Err(Error::InvalidDatabase(
+            "the embedded schema definition is invalid".into(),
+        ));
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT type, name, tbl_name, sql
+         FROM sqlite_schema
+         WHERE name NOT LIKE 'sqlite_%'
+         ORDER BY name",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+        ))
+    })?;
+    let actual: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
+
+    if actual.len() != expected_objects.len() {
+        return Err(Error::InvalidDatabase(format!(
+            "schema version {version} contains {} application objects instead of {}",
+            actual.len(),
+            expected_objects.len()
+        )));
+    }
+
+    for (expected, (actual_kind, actual_name, actual_table, actual_sql)) in
+        expected_objects.iter().zip(actual)
+    {
+        if actual_kind != expected.kind
+            || actual_name != expected.name
+            || actual_table != expected.table
+        {
+            return Err(Error::InvalidDatabase(format!(
+                "schema object {actual_name:?} does not belong to schema version {version}"
+            )));
+        }
+        let expected_sql = &expected_statements[expected.statement_index];
+        if actual_sql.as_deref().map(normalize_sql).as_ref() != Some(expected_sql) {
+            return Err(Error::InvalidDatabase(format!(
+                "schema object {:?} does not match schema version {version}",
+                expected.name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_sql(sql: &str) -> String {
+    sql.split_whitespace().collect::<Vec<_>>().join(" ")
+}

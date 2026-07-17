@@ -39,7 +39,7 @@ fn create_node(
         .create_node(CreateNode {
             parent_id,
             placement,
-            text: text.into(),
+            ..CreateNode::new(text)
         })
         .expect("create node")
 }
@@ -74,27 +74,6 @@ fn a_node_can_be_read_after_reopening_the_database() {
 }
 
 #[test]
-fn the_frozen_v1_fixture_opens_through_the_public_api() {
-    let database = TestDatabase::new();
-    std::fs::write(
-        database.path(),
-        include_bytes!("fixtures/v1.vrac").as_slice(),
-    )
-    .expect("copy v1 fixture");
-
-    let engine = Engine::open(database.path()).expect("open v1 fixture");
-    let roots = children(&engine, None);
-    assert_eq!(roots.len(), 1);
-    assert_eq!(roots[0].text, "Meeting about project X");
-    let decisions = children(&engine, Some(roots[0].id));
-    assert_eq!(decisions.len(), 1);
-    assert_eq!(decisions[0].text, "Decision: ship on Friday");
-    let report = engine.check().expect("check v1 fixture");
-    assert!(report.is_ok());
-    assert_eq!(report.node_count, 2);
-}
-
-#[test]
 fn new_databases_have_stable_format_markers_and_wal() {
     let database = TestDatabase::new();
     let engine = Engine::open(database.path()).expect("open database");
@@ -112,12 +91,12 @@ fn new_databases_have_stable_format_markers_and_wal() {
         .expect("read journal mode");
 
     assert_eq!(application_id, VRAC_APPLICATION_ID);
-    assert_eq!(schema_version, 1);
+    assert_eq!(schema_version, 2);
     assert_eq!(journal_mode, "wal");
 }
 
 #[test]
-fn valid_unmarked_v1_databases_are_adopted() {
+fn valid_unmarked_v2_databases_are_adopted() {
     let database = TestDatabase::new();
     let engine = Engine::open(database.path()).expect("open database");
     drop(engine);
@@ -319,7 +298,7 @@ fn placement_references_must_exist_in_the_destination_sibling_list() {
         engine.create_node(CreateNode {
             parent_id: None,
             placement: Placement::Before(child.id),
-            text: "misplaced".into(),
+            ..CreateNode::new("misplaced")
         }),
         Err(Error::PlacementReferenceNotSibling {
             reference,
@@ -330,7 +309,7 @@ fn placement_references_must_exist_in_the_destination_sibling_list() {
         engine.create_node(CreateNode {
             parent_id: None,
             placement: Placement::After(absent),
-            text: "missing reference".into(),
+            ..CreateNode::new("missing reference")
         }),
         Err(Error::NodeNotFound(id)) if id == absent
     ));
@@ -347,7 +326,7 @@ fn invalid_parents_and_page_limits_are_rejected() {
         engine.create_node(CreateNode {
             parent_id: Some(absent),
             placement: Placement::Last,
-            text: "orphan".into(),
+            ..CreateNode::new("orphan")
         }),
         Err(Error::ParentNotFound(id)) if id == absent
     ));

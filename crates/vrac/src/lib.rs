@@ -22,9 +22,11 @@
 
 #![deny(missing_docs)]
 
+mod content;
 mod db;
 mod nodes;
 mod order;
+mod schema;
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -111,6 +113,34 @@ pub struct Node {
     pub parent_id: Option<NodeId>,
     /// Plain text stored by the node.
     pub text: String,
+    /// Canonical tags in deterministic lexical order.
+    pub tags: Vec<String>,
+    /// Inline references ordered by their label range.
+    pub references: Vec<NodeReference>,
+}
+
+/// One resolved inline reference returned with a node.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NodeReference {
+    /// Inclusive UTF-8 byte offset of the label after `[[`.
+    pub label_start: usize,
+    /// Exclusive UTF-8 byte offset of the label before `]]`.
+    pub label_end: usize,
+    /// Stable identity of the referenced node.
+    pub target_id: NodeId,
+    /// Current plain text of the referenced node.
+    pub target_text: String,
+}
+
+/// One inline reference supplied while creating or editing content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReferenceInput {
+    /// Inclusive UTF-8 byte offset of the label after `[[`.
+    pub label_start: usize,
+    /// Exclusive UTF-8 byte offset of the label before `]]`.
+    pub label_end: usize,
+    /// Stable identity of the referenced node.
+    pub target_id: NodeId,
 }
 
 /// Data required to create a node.
@@ -122,6 +152,10 @@ pub struct CreateNode {
     pub placement: Placement,
     /// Plain text for the new node.
     pub text: String,
+    /// Tags for the new node. They are canonicalized by the engine.
+    pub tags: Vec<String>,
+    /// Inline references for the new node.
+    pub references: Vec<ReferenceInput>,
 }
 
 impl CreateNode {
@@ -134,6 +168,8 @@ impl CreateNode {
             parent_id: None,
             placement: Placement::Last,
             text: text.into(),
+            tags: Vec::new(),
+            references: Vec::new(),
         }
     }
 }
@@ -250,6 +286,22 @@ pub enum CheckIssue {
     },
     /// Number of nodes that cannot be reached from a root.
     UnreachableNodes(u64),
+    /// A stored tag is not in canonical form.
+    NonCanonicalTag {
+        /// Node carrying the invalid tag.
+        node_id: NodeId,
+        /// Invalid stored value.
+        tag: String,
+    },
+    /// A stored inline reference has an invalid range.
+    InvalidReference {
+        /// Node containing the invalid reference.
+        source_id: NodeId,
+        /// Stored inclusive start byte.
+        start: i64,
+        /// Stored exclusive end byte.
+        end: i64,
+    },
     /// Marker indicating that additional issues were not included in the report.
     AdditionalIssuesOmitted,
 }
@@ -289,6 +341,21 @@ pub enum Error {
     PositionOverflow,
     /// Requested performance dataset cannot be represented in memory.
     GenerationTooLarge(u64),
+    /// A tag is empty or contains whitespace or `#`.
+    InvalidTag(String),
+    /// An inline reference does not cover a valid `[[label]]` range.
+    InvalidReferenceRange {
+        /// Inclusive UTF-8 byte offset supplied by the client.
+        start: usize,
+        /// Exclusive UTF-8 byte offset supplied by the client.
+        end: usize,
+    },
+    /// Two inline reference ranges overlap.
+    OverlappingReferences,
+    /// An inline reference target does not exist.
+    ReferenceTargetNotFound(NodeId),
+    /// A plain text replacement would discard outgoing references.
+    NodeHasReferences(NodeId),
 }
 
 impl fmt::Display for Error {
@@ -327,6 +394,20 @@ impl fmt::Display for Error {
                 write!(
                     formatter,
                     "the generator cannot create {count} nodes at once"
+                )
+            }
+            Self::InvalidTag(tag) => write!(formatter, "invalid tag: {tag:?}"),
+            Self::InvalidReferenceRange { start, end } => {
+                write!(formatter, "invalid reference range: {start}..{end}")
+            }
+            Self::OverlappingReferences => formatter.write_str("reference ranges overlap"),
+            Self::ReferenceTargetNotFound(id) => {
+                write!(formatter, "reference target not found: {id}")
+            }
+            Self::NodeHasReferences(id) => {
+                write!(
+                    formatter,
+                    "node {id} has outgoing references; replace its content instead"
                 )
             }
         }

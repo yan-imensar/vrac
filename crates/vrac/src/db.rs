@@ -2,12 +2,11 @@ use std::path::Path;
 
 use rusqlite::Connection;
 
+use crate::content::check_content;
+use crate::schema::prepare_database;
 use crate::{CheckIssue, CheckReport, Error, Result};
 
-const SCHEMA_VERSION: i64 = 1;
-const APPLICATION_ID: i64 = 0x5652_4143;
 const MAX_REPORTED_ISSUES: usize = 100;
-const SCHEMA_SQL: &str = include_str!("../schema.sql");
 
 /// Synchronous owner of one Vrac workspace connection.
 ///
@@ -76,6 +75,19 @@ impl Engine {
         drop(rows);
         drop(foreign_keys);
 
+        if issues.len() <= MAX_REPORTED_ISSUES {
+            let remaining = MAX_REPORTED_ISSUES.saturating_sub(issues.len());
+            let (content_issues, omitted) = check_content(&self.connection, remaining)?;
+            issues.extend(content_issues);
+            if omitted
+                && !issues
+                    .iter()
+                    .any(|issue| matches!(issue, CheckIssue::AdditionalIssuesOmitted))
+            {
+                issues.push(CheckIssue::AdditionalIssuesOmitted);
+            }
+        }
+
         let (node_count, reachable_count): (i64, i64) = self.connection.query_row(
             "WITH RECURSIVE reachable(id) AS (
                  SELECT id FROM nodes WHERE parent_id IS NULL
@@ -109,42 +121,6 @@ impl Engine {
     }
 }
 
-fn prepare_database(connection: &mut Connection) -> Result<()> {
-    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    let application_id: i64 =
-        connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
-
-    if application_id != 0 && application_id != APPLICATION_ID {
-        return Err(Error::InvalidDatabase(format!(
-            "application ID 0x{application_id:08x} does not identify a Vrac database"
-        )));
-    }
-
-    match version {
-        0 if application_id == 0 && database_is_empty(connection)? => {
-            let transaction = connection.transaction()?;
-            transaction.execute_batch(SCHEMA_SQL)?;
-            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-            transaction.commit()?;
-            Ok(())
-        }
-        0 => Err(Error::InvalidDatabase(
-            "the database has no schema version but is not an empty, unmarked file".into(),
-        )),
-        SCHEMA_VERSION => {
-            validate_schema(connection)?;
-            if application_id == 0 {
-                let transaction = connection.transaction()?;
-                transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-                transaction.commit()?;
-            }
-            Ok(())
-        }
-        version => Err(Error::UnsupportedSchemaVersion(version)),
-    }
-}
-
 fn enable_foreign_keys(connection: &Connection) -> Result<()> {
     connection.pragma_update(None, "foreign_keys", true)?;
     let enabled: i64 = connection.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
@@ -175,89 +151,10 @@ fn configure_persistence(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn database_is_empty(connection: &Connection) -> Result<bool> {
-    let object_count: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",
-        [],
-        |row| row.get(0),
-    )?;
-    Ok(object_count == 0)
-}
-
-fn validate_schema(connection: &Connection) -> Result<()> {
-    let expected_statements: Vec<String> = SCHEMA_SQL
-        .split(';')
-        .filter_map(|statement| {
-            let statement = statement.trim();
-            (!statement.is_empty()).then(|| normalize_sql(statement))
-        })
-        .collect();
-    if expected_statements.len() != 2 {
-        return Err(Error::InvalidDatabase(
-            "the embedded schema definition is invalid".into(),
-        ));
-    }
-
-    let expected = [
-        ("table", "nodes", "nodes", expected_statements[0].as_str()),
-        (
-            "index",
-            "nodes_by_parent",
-            "nodes",
-            expected_statements[1].as_str(),
-        ),
-    ];
-    let mut statement = connection.prepare(
-        "SELECT type, name, tbl_name, sql
-         FROM sqlite_schema
-         WHERE name NOT LIKE 'sqlite_%'
-         ORDER BY name",
-    )?;
-    let rows = statement.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, Option<String>>(3)?,
-        ))
-    })?;
-    let actual: Vec<_> = rows.collect::<rusqlite::Result<_>>()?;
-
-    if actual.len() != expected.len() {
-        return Err(Error::InvalidDatabase(format!(
-            "schema version {SCHEMA_VERSION} contains {} application objects instead of {}",
-            actual.len(),
-            expected.len()
-        )));
-    }
-    for ((kind, name, table, sql), (actual_kind, actual_name, actual_table, actual_sql)) in
-        expected.into_iter().zip(actual)
-    {
-        if actual_kind != kind || actual_name != name || actual_table != table {
-            return Err(Error::InvalidDatabase(format!(
-                "schema object {actual_name:?} does not belong to schema version {SCHEMA_VERSION}"
-            )));
-        }
-        if actual_sql.as_deref().map(normalize_sql).as_deref() != Some(sql) {
-            return Err(Error::InvalidDatabase(format!(
-                "schema object {name:?} does not match schema version {SCHEMA_VERSION}"
-            )));
-        }
-    }
-
-    connection
-        .prepare("SELECT id, parent_id, position, text FROM nodes LIMIT 0")
-        .map_err(|error| Error::InvalidDatabase(error.to_string()))?;
-    Ok(())
-}
-
-fn normalize_sql(sql: &str) -> String {
-    sql.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::APPLICATION_ID;
 
     #[test]
     fn in_memory_connections_enforce_required_pragmas() {

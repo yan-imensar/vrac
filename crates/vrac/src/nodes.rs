@@ -1,5 +1,10 @@
+use std::collections::{HashMap, HashSet};
+
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
+use crate::content::{
+    canonicalize_tags, hydrate_nodes, replace_references, replace_tags, validate_references,
+};
 use crate::db::Engine;
 use crate::order::{POSITION_STEP, position_at, position_for_placement};
 use crate::{
@@ -24,7 +29,10 @@ impl Engine {
             parent_id,
             placement,
             text,
+            tags,
+            references,
         } = input;
+        let tags = canonicalize_tags(tags)?;
 
         let transaction = self.connection.transaction()?;
         ensure_parent_exists(&transaction, parent_id)?;
@@ -37,18 +45,23 @@ impl Engine {
             "INSERT INTO nodes (id, parent_id, position, text) VALUES (?1, ?2, ?3, ?4)",
             params![node_id_bytes(&id), parent_bytes, position, &text],
         )?;
+        let references = validate_references(&transaction, &text, references)?;
+        replace_tags(&transaction, id, &tags)?;
+        replace_references(&transaction, id, &references)?;
         transaction.commit()?;
 
-        Ok(Node {
-            id,
-            parent_id,
-            text,
-        })
+        self.node(id)?
+            .ok_or_else(|| Error::InvalidDatabase("a newly created node could not be read".into()))
     }
 
     /// Reads one node by its stable identifier.
     pub fn node(&self, id: NodeId) -> Result<Option<Node>> {
-        stored_node(&self.connection, id).map(|node| node.map(|stored| stored.node))
+        let Some(stored) = stored_node(&self.connection, id)? else {
+            return Ok(None);
+        };
+        let mut nodes = vec![stored.node];
+        hydrate_nodes(&self.connection, &mut nodes)?;
+        Ok(nodes.pop())
     }
 
     /// Reads one ordered page of children for a parent or the root.
@@ -128,14 +141,76 @@ impl Engine {
         } else {
             None
         };
-        let nodes = stored_nodes.into_iter().map(|stored| stored.node).collect();
+        let mut nodes: Vec<Node> = stored_nodes.into_iter().map(|stored| stored.node).collect();
+        hydrate_nodes(&self.connection, &mut nodes)?;
 
         Ok(NodePage { nodes, next })
+    }
+
+    /// Returns the path from a root node to `id`.
+    ///
+    /// The virtual product root is not included. Work is proportional to the
+    /// node's depth and never traverses descendants.
+    pub fn path(&self, id: NodeId) -> Result<Vec<Node>> {
+        let mut statement = self.connection.prepare(
+            "WITH RECURSIVE ancestors(id, parent_id, position, text) AS (
+                 SELECT id, parent_id, position, text FROM nodes WHERE id = ?1
+                 UNION
+                 SELECT nodes.id, nodes.parent_id, nodes.position, nodes.text
+                 FROM nodes
+                 JOIN ancestors ON nodes.id = ancestors.parent_id
+             )
+             SELECT id, parent_id, position, text FROM ancestors",
+        )?;
+        let rows = statement.query_map(params![node_id_bytes(&id)], raw_node)?;
+        let stored: Vec<StoredNode> = rows
+            .map(|row| row.map_err(Error::from).and_then(decode_stored_node))
+            .collect::<Result<_>>()?;
+        if stored.is_empty() {
+            return Err(Error::NodeNotFound(id));
+        }
+
+        let mut nodes_by_id: HashMap<NodeId, Node> = stored
+            .into_iter()
+            .map(|stored| (stored.node.id, stored.node))
+            .collect();
+        let mut visited = HashSet::new();
+        let mut path = Vec::with_capacity(nodes_by_id.len());
+        let mut current = id;
+        loop {
+            if !visited.insert(current) {
+                return Err(Error::InvalidDatabase(
+                    "a cycle exists in the requested node path".into(),
+                ));
+            }
+            let node = nodes_by_id.remove(&current).ok_or_else(|| {
+                Error::InvalidDatabase("the requested node path has a missing parent".into())
+            })?;
+            let parent_id = node.parent_id;
+            path.push(node);
+            match parent_id {
+                Some(parent_id) => current = parent_id,
+                None => break,
+            }
+        }
+        path.reverse();
+        hydrate_nodes(&self.connection, &mut path)?;
+        Ok(path)
     }
 
     /// Replaces a node's text atomically.
     pub fn set_text(&mut self, id: NodeId, text: String) -> Result<()> {
         let transaction = self.connection.transaction()?;
+        let has_references: bool = transaction.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM node_references WHERE source_id = ?1
+             )",
+            params![node_id_bytes(&id)],
+            |row| row.get(0),
+        )?;
+        if has_references {
+            return Err(Error::NodeHasReferences(id));
+        }
         let changed = transaction.execute(
             "UPDATE nodes SET text = ?1 WHERE id = ?2",
             params![text, node_id_bytes(&id)],
@@ -264,12 +339,14 @@ fn decode_stored_node((id, parent_id, position, text): RawNode) -> Result<Stored
             id: decode_id(id)?,
             parent_id: parent_id.map(decode_id).transpose()?,
             text,
+            tags: Vec::new(),
+            references: Vec::new(),
         },
         position,
     })
 }
 
-fn decode_id(bytes: Vec<u8>) -> Result<NodeId> {
+pub(crate) fn decode_id(bytes: Vec<u8>) -> Result<NodeId> {
     let bytes: [u8; NODE_ID_LENGTH] = bytes.try_into().map_err(|bytes: Vec<u8>| {
         Error::InvalidDatabase(format!(
             "an identifier contains {} bytes instead of {NODE_ID_LENGTH}",
@@ -284,11 +361,11 @@ fn random_node_id(connection: &Connection) -> Result<NodeId> {
     decode_id(bytes)
 }
 
-fn node_id_bytes(id: &NodeId) -> &[u8] {
+pub(crate) fn node_id_bytes(id: &NodeId) -> &[u8] {
     &id.as_bytes()[..]
 }
 
-fn node_exists(connection: &Connection, id: NodeId) -> Result<bool> {
+pub(crate) fn node_exists(connection: &Connection, id: NodeId) -> Result<bool> {
     connection
         .query_row(
             "SELECT 1 FROM nodes WHERE id = ?1",

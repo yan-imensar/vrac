@@ -3,7 +3,9 @@ use std::io::{Error as IoError, ErrorKind};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use vrac::{CreateNode, Destination, Engine, GenerateShape, MAX_PAGE_SIZE, Page, Placement};
+use vrac::{
+    CreateNode, Destination, Engine, GenerateShape, MAX_PAGE_SIZE, Page, Placement, ReferenceInput,
+};
 
 const DEFAULT_NODE_COUNT: u64 = 5_000_000;
 
@@ -45,6 +47,22 @@ fn main() -> Result<(), Box<dyn StdError>> {
     print_duration("first_root_page", started.elapsed());
     println!("first_root_page_nodes\t{}\tcount", first_page.nodes.len());
 
+    let mut page_samples = Vec::with_capacity(100);
+    for _ in 0..100 {
+        let started = Instant::now();
+        let page = engine.children(
+            None,
+            Page {
+                limit: 100,
+                after: None,
+            },
+        )?;
+        std::hint::black_box(page);
+        page_samples.push(started.elapsed());
+    }
+    page_samples.sort_unstable();
+    print_duration("root_page_100_p95", page_samples[94]);
+
     let started = Instant::now();
     let mut after = None;
     let mut root_count = 0_u64;
@@ -85,6 +103,50 @@ fn main() -> Result<(), Box<dyn StdError>> {
         },
     )?;
     print_duration("move_root_first", started.elapsed());
+
+    let source_text = "Performance [[target]]";
+    let label_start = source_text.find("target").expect("reference label");
+    let mut source_input = CreateNode::new(source_text);
+    source_input.parent_id = Some(created.id);
+    source_input.tags = vec!["meeting".into(), "performance".into()];
+    source_input.references = vec![ReferenceInput {
+        label_start,
+        label_end: label_start + "target".len(),
+        target_id: created.id,
+    }];
+    let started = Instant::now();
+    let source = engine.create_node(source_input)?;
+    print_duration("create_with_metadata", started.elapsed());
+
+    let started = Instant::now();
+    engine.set_tags(source.id, vec!["decision".into(), "performance".into()])?;
+    print_duration("set_tags", started.elapsed());
+
+    let updated_text = "Updated [[target]]";
+    let updated_start = updated_text
+        .find("target")
+        .expect("updated reference label");
+    let started = Instant::now();
+    engine.set_content(
+        source.id,
+        updated_text.into(),
+        vec![ReferenceInput {
+            label_start: updated_start,
+            label_end: updated_start + "target".len(),
+            target_id: created.id,
+        }],
+    )?;
+    print_duration("set_content", started.elapsed());
+
+    let started = Instant::now();
+    let metadata_page = engine.children(Some(created.id), Page::default())?;
+    print_duration("metadata_page", started.elapsed());
+    println!("metadata_page_nodes\t{}\tcount", metadata_page.nodes.len());
+
+    let started = Instant::now();
+    let node_path = engine.path(source.id)?;
+    print_duration("path", started.elapsed());
+    println!("path_nodes\t{}\tcount", node_path.len());
 
     let started = Instant::now();
     let report = engine.check()?;
