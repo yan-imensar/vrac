@@ -22,6 +22,7 @@
 
 #![deny(missing_docs)]
 
+mod checkpoint;
 mod content;
 mod db;
 mod nodes;
@@ -356,6 +357,12 @@ pub enum Error {
     ReferenceTargetNotFound(NodeId),
     /// A plain text replacement would discard outgoing references.
     NodeHasReferences(NodeId),
+    /// The checkpoint destination already exists and was not modified.
+    CheckpointDestinationExists,
+    /// A generated checkpoint failed its complete integrity validation.
+    InvalidCheckpoint(CheckReport),
+    /// A filesystem operation outside SQLite failed.
+    Io(std::io::Error),
 }
 
 impl fmt::Display for Error {
@@ -410,6 +417,15 @@ impl fmt::Display for Error {
                     "node {id} has outgoing references; replace its content instead"
                 )
             }
+            Self::CheckpointDestinationExists => {
+                formatter.write_str("checkpoint destination already exists")
+            }
+            Self::InvalidCheckpoint(report) => write!(
+                formatter,
+                "checkpoint validation reported {} integrity issues",
+                report.issues.len()
+            ),
+            Self::Io(error) => write!(formatter, "I/O error: {error}"),
         }
     }
 }
@@ -418,6 +434,7 @@ impl StdError for Error {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Sqlite(error) => Some(error),
+            Self::Io(error) => Some(error),
             _ => None,
         }
     }
@@ -426,6 +443,12 @@ impl StdError for Error {
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Self {
         Self::Sqlite(error)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
     }
 }
 

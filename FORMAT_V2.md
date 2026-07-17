@@ -97,6 +97,10 @@ deletion is not part of the current public API.
 The committed [`v2.vrac`](crates/vrac/tests/fixtures/v2.vrac) sample is the
 immutable format fixture.
 
+A checkpoint is a complete standalone file in this same format. It contains no
+dependency on the active workspace's WAL and can be opened directly as a normal
+workspace.
+
 ## Integrity and derived data
 
 Tables and indexes in the schema above are canonical. Schema changes require a

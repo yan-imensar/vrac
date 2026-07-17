@@ -5,7 +5,5 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-rusqlite = { version = "0.40.1", features = ["bundled"] }
-
-[dev-dependencies]
+rusqlite = { version = "0.40.1", features = ["backup", "bundled"] }
 tempfile = "3.27.0"

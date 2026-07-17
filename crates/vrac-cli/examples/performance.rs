@@ -19,10 +19,11 @@ fn main() -> Result<(), Box<dyn StdError>> {
     }
 
     let (path, node_count, shape, shape_name) = parse_arguments()?;
-    if path.exists() {
+    let checkpoint_path = path.with_extension("checkpoint.vrac");
+    if path.exists() || checkpoint_path.exists() {
         return Err(input_error(format!(
-            "refusing to overwrite existing path: {}",
-            path.display()
+            "refusing to overwrite an existing performance file near: {}",
+            path.display(),
         ))
         .into());
     }
@@ -273,6 +274,14 @@ fn main() -> Result<(), Box<dyn StdError>> {
         .into());
     }
     println!("checked_nodes\t{}\tcount", report.node_count);
+
+    let started = Instant::now();
+    engine.checkpoint(&checkpoint_path)?;
+    print_duration("checkpoint", started.elapsed());
+    println!(
+        "checkpoint_bytes\t{}\tbytes",
+        std::fs::metadata(&checkpoint_path)?.len()
+    );
 
     drop(engine);
     println!("database_bytes\t{}\tbytes", std::fs::metadata(path)?.len());

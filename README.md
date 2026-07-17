@@ -49,7 +49,22 @@ checking. Interactive measurements use 100 samples and fail the scenario when
 their p95 exceeds the 5 ms engine budget. The generated workspace includes a
 metadata-rich page with multiple tags and references plus a deep path. Large
 performance scenarios are intentionally separate from ordinary correctness
-tests.
+tests. The scenario also creates and validates a companion
+`*.checkpoint.vrac` file without applying the interactive latency budget to
+that background operation.
+
+## Checkpoints
+
+`Engine::checkpoint(destination)` creates a complete SQLite snapshot through
+SQLite's online backup API. It validates the schema and all integrity rules
+before publishing the destination, never copies an open database or its WAL,
+and never overwrites an existing file. The resulting file is an ordinary v2
+workspace that can be opened directly.
+
+Checkpoint creation is synchronous and proportional to the complete workspace
+size. A client must schedule it outside its interactive execution path. The
+engine deliberately provides no scheduler, retention policy, or destructive
+restore operation yet.
 
 ## CLI
 
@@ -85,7 +100,8 @@ The engine returns typed errors and never prints or terminates the process.
 Public error categories cover SQLite failures, invalid or unsupported
 workspaces, missing nodes or parents, invalid relative placement, cycles,
 pagination limits, invalid tags or references, and performance-data generation
-limits.
+limits. Checkpoint errors distinguish an existing destination, failed integrity
+validation, and filesystem failures.
 
 The CLI writes node data and successful command results to standard output and
 diagnostics to standard error. Its exit codes are:
