@@ -91,7 +91,7 @@ fn new_databases_have_stable_format_markers_and_wal() {
         .expect("read journal mode");
 
     assert_eq!(application_id, VRAC_APPLICATION_ID);
-    assert_eq!(schema_version, 4);
+    assert_eq!(schema_version, 1);
     assert_eq!(journal_mode, "wal");
 }
 

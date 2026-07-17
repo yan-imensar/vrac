@@ -40,21 +40,6 @@ fn create(engine: &mut Engine, text: &str) -> Node {
 }
 
 #[test]
-fn the_frozen_v3_fixture_is_preserved_but_not_migrated() {
-    let database = TestDatabase::new();
-    std::fs::write(
-        database.path(),
-        include_bytes!("fixtures/v3.vrac").as_slice(),
-    )
-    .expect("copy v3 fixture");
-
-    assert!(matches!(
-        Engine::open(database.path()),
-        Err(Error::UnsupportedSchemaVersion(3))
-    ));
-}
-
-#[test]
 fn search_is_bounded_prefix_based_and_tracks_text_changes() {
     let mut engine = Engine::open(":memory:").expect("open database");
     let project = create(&mut engine, "Projet Éléphant");
@@ -123,21 +108,6 @@ fn references_inside_a_deleted_subtree_do_not_block_deletion() {
 
     assert_eq!(engine.delete_node(root.id).expect("delete subtree"), 1);
     assert!(engine.check().unwrap().is_ok());
-}
-
-#[test]
-fn the_preproduction_v2_fixture_is_preserved_but_not_migrated() {
-    let database = TestDatabase::new();
-    std::fs::write(
-        database.path(),
-        include_bytes!("fixtures/v2.vrac").as_slice(),
-    )
-    .expect("copy v2 fixture");
-
-    assert!(matches!(
-        Engine::open(database.path()),
-        Err(Error::UnsupportedSchemaVersion(2))
-    ));
 }
 
 #[test]

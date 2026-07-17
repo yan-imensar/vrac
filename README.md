@@ -5,8 +5,7 @@ The repository contains the v0.1 Rust engine, its CLI, and the first minimal
 Tauri/Svelte product slice.
 
 Contribution rules are documented in [`AGENTS.md`](AGENTS.md).
-The current SQLite workspace format is documented in
-[`FORMAT_V4.md`](FORMAT_V4.md).
+The current SQLite workspace format is documented in [`FORMAT.md`](FORMAT.md).
 
 ## Layout
 
@@ -80,7 +79,7 @@ will receive device-level memory baselines before mobile release.
 `Engine::checkpoint(destination)` creates a complete SQLite snapshot through
 SQLite's online backup API. It validates the schema and all integrity rules
 before publishing the destination, never copies an open database or its WAL,
-and never overwrites an existing file. The resulting file is an ordinary v4
+and never overwrites an existing file. The resulting file is an ordinary
 workspace that can be opened directly.
 
 Checkpoint creation is synchronous and proportional to the complete workspace
@@ -180,11 +179,11 @@ diagnostics to standard error. Its exit codes are:
 
 ## Database format
 
-A Vrac workspace is an ordinary SQLite file. Current format version 4 uses
-`PRAGMA application_id = 0x56524143` (`VRAC` in ASCII) and
-`PRAGMA user_version = 4`. The engine validates both the marker and the exact
-schema before accepting an existing file. Older pre-production formats remain
-unsupported. Valid unmarked current databases are marked only after validation.
+A Vrac workspace is an ordinary SQLite file. The current pre-production format
+uses `PRAGMA application_id = 0x56524143` (`VRAC` in ASCII) and
+`PRAGMA user_version = 1`. The engine validates both the marker and the exact
+schema before accepting an existing file. Valid unmarked current databases are
+marked only after validation.
 
 Nodes may carry multiple canonical tags outside their text and stable inline
 references whose displayed target text follows target renames. Root-level
@@ -194,4 +193,4 @@ also provides a root-to-node path read for focused navigation.
 File-backed workspaces use foreign-key enforcement, WAL journaling, and
 `synchronous = FULL`. The current canonical schema is
 [`crates/vrac/schema.sql`](crates/vrac/schema.sql); its compatibility rules are
-defined in [`FORMAT_V4.md`](FORMAT_V4.md).
+defined in [`FORMAT.md`](FORMAT.md).
