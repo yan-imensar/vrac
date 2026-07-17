@@ -1,0 +1,392 @@
+use std::error::Error as StdError;
+use std::fmt;
+use std::process::ExitCode;
+
+use vrac::{CheckIssue, CreateNode, Destination, Engine, GenerateShape, Node, NodeId, Page};
+
+const USAGE: &str = "\
+Vrac, a local-first outliner engine
+
+Usage:
+  vrac init <file>
+  vrac add <file> [--parent <id>] <text>
+  vrac node <file> <id>
+  vrac children <file> [--parent <id>] [--limit <n>]
+  vrac set-text <file> <id> <text>
+  vrac move <file> <id> [--parent <id>] [--position <n>]
+  vrac check <file>
+  vrac generate <file> --nodes <n> [--shape wide|deep|mixed]
+";
+
+fn main() -> ExitCode {
+    match run() {
+        Ok(exit_code) => exit_code,
+        Err(CliError::Usage(message)) => {
+            eprintln!("error: {message}\n\n{USAGE}");
+            ExitCode::from(2)
+        }
+        Err(CliError::Engine(error)) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> Result<ExitCode, CliError> {
+    let mut arguments = std::env::args().skip(1);
+    let Some(command) = arguments.next() else {
+        return Err(CliError::Usage("missing command".into()));
+    };
+    let arguments: Vec<String> = arguments.collect();
+
+    match command.as_str() {
+        "help" | "--help" | "-h" => {
+            print!("{USAGE}");
+            Ok(ExitCode::SUCCESS)
+        }
+        "init" => command_init(&arguments),
+        "add" => command_add(&arguments),
+        "node" => command_node(&arguments),
+        "children" => command_children(&arguments),
+        "set-text" => command_set_text(&arguments),
+        "move" => command_move(&arguments),
+        "check" => command_check(&arguments),
+        "generate" => command_generate(&arguments),
+        _ => Err(CliError::Usage(format!("unknown command: {command}"))),
+    }
+}
+
+fn command_init(arguments: &[String]) -> Result<ExitCode, CliError> {
+    expect_argument_count(arguments, 1, "init expects a file")?;
+    Engine::open(&arguments[0])?;
+    println!("initialized\t{}", arguments[0]);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn command_add(arguments: &[String]) -> Result<ExitCode, CliError> {
+    if arguments.len() < 2 {
+        return Err(CliError::Usage("add expects a file and text".into()));
+    }
+
+    let path = &arguments[0];
+    let mut parent_id = None;
+    let mut text_parts = Vec::new();
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--parent" => {
+                if parent_id.is_some() {
+                    return Err(CliError::Usage(
+                        "--parent was provided more than once".into(),
+                    ));
+                }
+                parent_id = Some(parse_id(option_value(arguments, &mut index, "--parent")?)?);
+            }
+            "--" => {
+                text_parts.extend_from_slice(&arguments[index + 1..]);
+                break;
+            }
+            option if option.starts_with("--") => {
+                return Err(CliError::Usage(format!("unknown option: {option}")));
+            }
+            _ => text_parts.push(arguments[index].clone()),
+        }
+        index += 1;
+    }
+
+    if text_parts.is_empty() {
+        return Err(CliError::Usage("missing node text".into()));
+    }
+
+    let mut engine = Engine::open(path)?;
+    let node = engine.create_node(CreateNode {
+        parent_id,
+        position: None,
+        text: text_parts.join(" "),
+    })?;
+    println!("{}", node.id);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn command_node(arguments: &[String]) -> Result<ExitCode, CliError> {
+    expect_argument_count(arguments, 2, "node expects a file and an identifier")?;
+    let id = parse_id(&arguments[1])?;
+    let engine = Engine::open(&arguments[0])?;
+    let node = engine.node(id)?.ok_or(vrac::Error::NodeNotFound(id))?;
+    print_node(&node);
+    Ok(ExitCode::SUCCESS)
+}
+
+fn command_children(arguments: &[String]) -> Result<ExitCode, CliError> {
+    if arguments.is_empty() {
+        return Err(CliError::Usage("children expects a file".into()));
+    }
+
+    let path = &arguments[0];
+    let mut parent_id = None;
+    let mut limit = Page::default().limit;
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--parent" => {
+                if parent_id.is_some() {
+                    return Err(CliError::Usage(
+                        "--parent was provided more than once".into(),
+                    ));
+                }
+                parent_id = Some(parse_id(option_value(arguments, &mut index, "--parent")?)?);
+            }
+            "--limit" => {
+                let value = option_value(arguments, &mut index, "--limit")?;
+                limit = value
+                    .parse()
+                    .map_err(|_| CliError::Usage(format!("invalid limit: {value}")))?;
+            }
+            option => return Err(CliError::Usage(format!("unknown option: {option}"))),
+        }
+        index += 1;
+    }
+
+    let engine = Engine::open(path)?;
+    for node in engine.children(parent_id, Page { limit, after: None })? {
+        print_node(&node);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn command_set_text(arguments: &[String]) -> Result<ExitCode, CliError> {
+    if arguments.len() < 3 {
+        return Err(CliError::Usage(
+            "set-text expects a file, an identifier, and text".into(),
+        ));
+    }
+
+    let id = parse_id(&arguments[1])?;
+    let mut engine = Engine::open(&arguments[0])?;
+    engine.set_text(id, arguments[2..].join(" "))?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn command_move(arguments: &[String]) -> Result<ExitCode, CliError> {
+    if arguments.len() < 2 {
+        return Err(CliError::Usage(
+            "move expects a file and an identifier".into(),
+        ));
+    }
+
+    let path = &arguments[0];
+    let id = parse_id(&arguments[1])?;
+    let mut parent_id = None;
+    let mut position = None;
+    let mut index = 2;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--parent" => {
+                if parent_id.is_some() {
+                    return Err(CliError::Usage(
+                        "--parent was provided more than once".into(),
+                    ));
+                }
+                parent_id = Some(parse_id(option_value(arguments, &mut index, "--parent")?)?);
+            }
+            "--position" => {
+                if position.is_some() {
+                    return Err(CliError::Usage(
+                        "--position was provided more than once".into(),
+                    ));
+                }
+                let value = option_value(arguments, &mut index, "--position")?;
+                position = Some(
+                    value
+                        .parse()
+                        .map_err(|_| CliError::Usage(format!("invalid position: {value}")))?,
+                );
+            }
+            option => return Err(CliError::Usage(format!("unknown option: {option}"))),
+        }
+        index += 1;
+    }
+
+    let mut engine = Engine::open(path)?;
+    engine.move_node(
+        id,
+        Destination {
+            parent_id,
+            position,
+        },
+    )?;
+    Ok(ExitCode::SUCCESS)
+}
+
+fn command_check(arguments: &[String]) -> Result<ExitCode, CliError> {
+    expect_argument_count(arguments, 1, "check expects a file")?;
+    let engine = Engine::open(&arguments[0])?;
+    let report = engine.check()?;
+
+    if report.is_ok() {
+        println!("ok\t{} nodes", report.node_count);
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    println!("invalid\t{} nodes", report.node_count);
+    for issue in report.issues {
+        match issue {
+            CheckIssue::SqliteIntegrity(message) => {
+                println!("sqlite\t{}", escape_text(&message));
+            }
+            CheckIssue::ForeignKey {
+                table,
+                rowid,
+                parent,
+                foreign_key_index,
+            } => println!(
+                "foreign-key\t{}\t{}\t{}\t{}",
+                escape_text(&table),
+                rowid.map_or_else(|| "-".into(), |value| value.to_string()),
+                escape_text(&parent),
+                foreign_key_index
+            ),
+            CheckIssue::UnreachableNodes(count) => {
+                println!("unreachable\t{count}");
+            }
+            CheckIssue::AdditionalIssuesOmitted => println!("issues-omitted"),
+        }
+    }
+    Ok(ExitCode::from(3))
+}
+
+fn command_generate(arguments: &[String]) -> Result<ExitCode, CliError> {
+    if arguments.is_empty() {
+        return Err(CliError::Usage("generate expects a file".into()));
+    }
+
+    let path = &arguments[0];
+    let mut count = None;
+    let mut shape = GenerateShape::Mixed;
+    let mut shape_name = "mixed";
+    let mut index = 1;
+    while index < arguments.len() {
+        match arguments[index].as_str() {
+            "--nodes" => {
+                if count.is_some() {
+                    return Err(CliError::Usage(
+                        "--nodes was provided more than once".into(),
+                    ));
+                }
+                let value = option_value(arguments, &mut index, "--nodes")?;
+                count = Some(
+                    value
+                        .parse()
+                        .map_err(|_| CliError::Usage(format!("invalid count: {value}")))?,
+                );
+            }
+            "--shape" => {
+                let value = option_value(arguments, &mut index, "--shape")?;
+                (shape, shape_name) = match value {
+                    "wide" => (GenerateShape::Wide, "wide"),
+                    "deep" => (GenerateShape::Deep, "deep"),
+                    "mixed" => (GenerateShape::Mixed, "mixed"),
+                    _ => {
+                        return Err(CliError::Usage(format!(
+                            "invalid shape: {value} (expected wide, deep, or mixed)"
+                        )));
+                    }
+                };
+            }
+            option => return Err(CliError::Usage(format!("unknown option: {option}"))),
+        }
+        index += 1;
+    }
+
+    let count = count.ok_or_else(|| CliError::Usage("--nodes is required".into()))?;
+    let mut engine = Engine::open(path)?;
+    engine.generate_nodes(count, shape)?;
+    println!("generated\t{count}\t{shape_name}");
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_node(node: &Node) {
+    let parent = node
+        .parent_id
+        .map_or_else(|| "-".into(), |id| id.to_string());
+    println!(
+        "{}\t{}\t{}\t{}",
+        node.id,
+        parent,
+        node.position,
+        escape_text(&node.text)
+    );
+}
+
+fn escape_text(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn expect_argument_count(
+    arguments: &[String],
+    expected: usize,
+    message: &str,
+) -> Result<(), CliError> {
+    if arguments.len() != expected {
+        return Err(CliError::Usage(message.into()));
+    }
+    Ok(())
+}
+
+fn option_value<'a>(
+    arguments: &'a [String],
+    index: &mut usize,
+    option: &str,
+) -> Result<&'a str, CliError> {
+    *index += 1;
+    arguments
+        .get(*index)
+        .map(String::as_str)
+        .ok_or_else(|| CliError::Usage(format!("missing value after {option}")))
+}
+
+fn parse_id(value: &str) -> Result<NodeId, CliError> {
+    value
+        .parse()
+        .map_err(|error| CliError::Usage(format!("invalid identifier ({value}): {error}")))
+}
+
+#[derive(Debug)]
+enum CliError {
+    Usage(String),
+    Engine(vrac::Error),
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Usage(message) => formatter.write_str(message),
+            Self::Engine(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl StdError for CliError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::Usage(_) => None,
+            Self::Engine(error) => Some(error),
+        }
+    }
+}
+
+impl From<vrac::Error> for CliError {
+    fn from(error: vrac::Error) -> Self {
+        Self::Engine(error)
+    }
+}

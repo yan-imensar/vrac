@@ -1,0 +1,15 @@
+[package]
+name = "vrac-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vrac"
+path = "src/main.rs"
+
+[dependencies]
+vrac = { path = "../vrac" }
+
+[dev-dependencies]
+tempfile = "3.27.0"
