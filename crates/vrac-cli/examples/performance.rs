@@ -8,6 +8,10 @@ use vrac::{
 };
 
 const DEFAULT_NODE_COUNT: u64 = 5_000_000;
+const SAMPLE_COUNT: usize = 100;
+const METADATA_PAGE_SIZE: usize = 100;
+const DEEP_PATH_LENGTH: usize = 100;
+const INTERACTIVE_BUDGET: Duration = Duration::from_millis(5);
 
 fn main() -> Result<(), Box<dyn StdError>> {
     if cfg!(debug_assertions) {
@@ -47,9 +51,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     print_duration("first_root_page", started.elapsed());
     println!("first_root_page_nodes\t{}\tcount", first_page.nodes.len());
 
-    let mut page_samples = Vec::with_capacity(100);
-    for _ in 0..100 {
-        let started = Instant::now();
+    let root_page_p95 = measure_p95(|| {
         let page = engine.children(
             None,
             Page {
@@ -58,10 +60,9 @@ fn main() -> Result<(), Box<dyn StdError>> {
             },
         )?;
         std::hint::black_box(page);
-        page_samples.push(started.elapsed());
-    }
-    page_samples.sort_unstable();
-    print_duration("root_page_100_p95", page_samples[94]);
+        Ok(())
+    })?;
+    record_interactive("root_page_100_p95", root_page_p95)?;
 
     let started = Instant::now();
     let mut after = None;
@@ -90,63 +91,176 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let created = engine.create_node(CreateNode::new("Performance probe"))?;
     print_duration("create_root", started.elapsed());
 
-    let started = Instant::now();
-    engine.set_text(created.id, "Updated performance probe".into())?;
-    print_duration("set_text", started.elapsed());
+    let mut metadata_nodes = Vec::with_capacity(METADATA_PAGE_SIZE);
+    let mut create_samples = Vec::with_capacity(METADATA_PAGE_SIZE);
+    for index in 0..METADATA_PAGE_SIZE {
+        let text = format!("Decision {index} on [[target]]");
+        let label_start = text.find("target").expect("reference label");
+        let mut input = CreateNode::new(&text);
+        input.parent_id = Some(created.id);
+        input.tags = vec![
+            "meeting".into(),
+            "decision".into(),
+            format!("group-{}", index % 5),
+        ];
+        input.references = vec![ReferenceInput {
+            label_start,
+            label_end: label_start + "target".len(),
+            target_id: created.id,
+        }];
+        let started = Instant::now();
+        metadata_nodes.push(engine.create_node(input)?);
+        create_samples.push(started.elapsed());
+    }
+    record_interactive(
+        "create_with_metadata_p95",
+        percentile_95(&mut create_samples),
+    )?;
+    let source = metadata_nodes
+        .first()
+        .expect("metadata page is not empty")
+        .clone();
 
-    let started = Instant::now();
-    engine.move_node(
-        created.id,
-        Destination {
-            parent_id: None,
-            placement: Placement::First,
+    let mut iteration = 0;
+    let set_text_p95 = measure_p95(|| {
+        let text = if iteration % 2 == 0 {
+            "Updated performance probe A"
+        } else {
+            "Updated performance probe B"
+        };
+        iteration += 1;
+        engine.set_text(created.id, text.into())
+    })?;
+    record_interactive("set_text_p95", set_text_p95)?;
+
+    let mut iteration = 0;
+    let set_tags_p95 = measure_p95(|| {
+        let variant = iteration % 2;
+        iteration += 1;
+        engine.set_tags(
+            source.id,
+            vec!["decision".into(), format!("performance-{variant}")],
+        )
+    })?;
+    record_interactive("set_tags_p95", set_tags_p95)?;
+
+    let mut iteration = 0;
+    let set_content_p95 = measure_p95(|| {
+        let text = if iteration % 2 == 0 {
+            "Updated [[target A]]"
+        } else {
+            "Updated [[target B]]"
+        };
+        iteration += 1;
+        let label_start = text.find("target").expect("updated reference label");
+        engine.set_content(
+            source.id,
+            text.into(),
+            vec![ReferenceInput {
+                label_start,
+                label_end: text.len() - 2,
+                target_id: created.id,
+            }],
+        )
+    })?;
+    record_interactive("set_content_p95", set_content_p95)?;
+
+    let mut iteration = 0;
+    let move_p95 = measure_p95(|| {
+        let placement = if iteration % 2 == 0 {
+            Placement::First
+        } else {
+            Placement::Last
+        };
+        iteration += 1;
+        engine.move_node(
+            created.id,
+            Destination {
+                parent_id: None,
+                placement,
+            },
+        )
+    })?;
+    record_interactive("move_root_p95", move_p95)?;
+
+    let node_p95 = measure_p95(|| {
+        let node = engine.node(source.id)?;
+        std::hint::black_box(node);
+        Ok(())
+    })?;
+    record_interactive("node_with_metadata_p95", node_p95)?;
+
+    let metadata_page = engine.children(
+        Some(created.id),
+        Page {
+            limit: METADATA_PAGE_SIZE,
+            after: None,
         },
     )?;
-    print_duration("move_root_first", started.elapsed());
-
-    let source_text = "Performance [[target]]";
-    let label_start = source_text.find("target").expect("reference label");
-    let mut source_input = CreateNode::new(source_text);
-    source_input.parent_id = Some(created.id);
-    source_input.tags = vec!["meeting".into(), "performance".into()];
-    source_input.references = vec![ReferenceInput {
-        label_start,
-        label_end: label_start + "target".len(),
-        target_id: created.id,
-    }];
-    let started = Instant::now();
-    let source = engine.create_node(source_input)?;
-    print_duration("create_with_metadata", started.elapsed());
-
-    let started = Instant::now();
-    engine.set_tags(source.id, vec!["decision".into(), "performance".into()])?;
-    print_duration("set_tags", started.elapsed());
-
-    let updated_text = "Updated [[target]]";
-    let updated_start = updated_text
-        .find("target")
-        .expect("updated reference label");
-    let started = Instant::now();
-    engine.set_content(
-        source.id,
-        updated_text.into(),
-        vec![ReferenceInput {
-            label_start: updated_start,
-            label_end: updated_start + "target".len(),
-            target_id: created.id,
-        }],
-    )?;
-    print_duration("set_content", started.elapsed());
-
-    let started = Instant::now();
-    let metadata_page = engine.children(Some(created.id), Page::default())?;
-    print_duration("metadata_page", started.elapsed());
+    let target_text = engine
+        .node(created.id)?
+        .ok_or_else(|| IoError::other("metadata target disappeared"))?
+        .text;
+    if metadata_page.nodes.len() != METADATA_PAGE_SIZE
+        || metadata_page.nodes.iter().any(|node| {
+            node.tags.len() < 2
+                || node.references.len() != 1
+                || node.references[0].target_text != target_text
+        })
+    {
+        return Err(IoError::other("metadata page does not exercise tags and references").into());
+    }
     println!("metadata_page_nodes\t{}\tcount", metadata_page.nodes.len());
+    let metadata_page_p95 = measure_p95(|| {
+        let page = engine.children(
+            Some(created.id),
+            Page {
+                limit: METADATA_PAGE_SIZE,
+                after: None,
+            },
+        )?;
+        std::hint::black_box(page);
+        Ok(())
+    })?;
+    record_interactive("metadata_page_100_p95", metadata_page_p95)?;
 
-    let started = Instant::now();
-    let node_path = engine.path(source.id)?;
-    print_duration("path", started.elapsed());
-    println!("path_nodes\t{}\tcount", node_path.len());
+    let shallow_path_p95 = measure_p95(|| {
+        let path = engine.path(source.id)?;
+        std::hint::black_box(path);
+        Ok(())
+    })?;
+    record_interactive("shallow_path_p95", shallow_path_p95)?;
+
+    let mut leaf_id = source.id;
+    for depth in 0..DEEP_PATH_LENGTH {
+        let text = format!("Depth {depth} [[target]]");
+        let label_start = text.find("target").expect("deep reference label");
+        let mut input = CreateNode::new(&text);
+        input.parent_id = Some(leaf_id);
+        input.tags = vec!["path".into(), format!("depth-{}", depth % 10)];
+        input.references = vec![ReferenceInput {
+            label_start,
+            label_end: label_start + "target".len(),
+            target_id: created.id,
+        }];
+        leaf_id = engine.create_node(input)?.id;
+    }
+    let deep_path = engine.path(leaf_id)?;
+    if deep_path.len() != DEEP_PATH_LENGTH + 2
+        || deep_path
+            .iter()
+            .skip(1)
+            .any(|node| node.tags.is_empty() || node.references.len() != 1)
+    {
+        return Err(IoError::other("deep path does not exercise node metadata").into());
+    }
+    println!("deep_path_nodes\t{}\tcount", deep_path.len());
+    let deep_path_p95 = measure_p95(|| {
+        let path = engine.path(leaf_id)?;
+        std::hint::black_box(path);
+        Ok(())
+    })?;
+    record_interactive("deep_path_p95", deep_path_p95)?;
 
     let started = Instant::now();
     let report = engine.check()?;
@@ -212,6 +326,32 @@ fn parse_arguments() -> Result<(PathBuf, u64, GenerateShape, &'static str), Box<
 
 fn print_duration(name: &str, duration: Duration) {
     println!("{name}\t{:.3}\tms", duration.as_secs_f64() * 1_000.0);
+}
+
+fn measure_p95(mut operation: impl FnMut() -> vrac::Result<()>) -> vrac::Result<Duration> {
+    let mut samples = Vec::with_capacity(SAMPLE_COUNT);
+    for _ in 0..SAMPLE_COUNT {
+        let started = Instant::now();
+        operation()?;
+        samples.push(started.elapsed());
+    }
+    Ok(percentile_95(&mut samples))
+}
+
+fn percentile_95(samples: &mut [Duration]) -> Duration {
+    samples.sort_unstable();
+    samples[(samples.len() * 95).div_ceil(100) - 1]
+}
+
+fn record_interactive(name: &str, duration: Duration) -> Result<(), IoError> {
+    print_duration(name, duration);
+    if duration > INTERACTIVE_BUDGET {
+        return Err(IoError::other(format!(
+            "{name} exceeded the {:.3} ms interactive budget",
+            INTERACTIVE_BUDGET.as_secs_f64() * 1_000.0
+        )));
+    }
+    Ok(())
 }
 
 fn input_error(message: impl Into<String>) -> IoError {

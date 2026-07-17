@@ -95,11 +95,23 @@ covered by tests before it is considered complete.
 Several million nodes are a real constraint, but not a reason for speculative
 optimization.
 
+Interactive engine operations have a budget of 5 ms at p95 on the reference
+machine. This budget covers loading a page of 100 nodes, including a page where
+every node has tags and references, reading one node, creating or editing
+content, replacing tags, moving a node, and reading a representative deep path.
+Full integrity checks, exports, bulk generation, and complete-tree traversal are
+background operations and are not subject to this interactive budget.
+
 - Keep frequent accesses indexed by parent, position, and identifier.
 - Avoid complete loads, updates proportional to subtree size, and needlessly
   long transactions.
 - Measure sensitive changes in `--release` mode, on a file, with a
   representative tree shape.
+- After every engine or schema change that can affect interactive work, run the
+  five-million-node release scenario and verify every reported interactive p95.
+- The performance dataset must exercise plain nodes, metadata-rich pages,
+  multiple tags, resolved references, target renames, content and tag edits,
+  sibling moves, and paths at several depths.
 - Compare before and after with a reproducible scenario.
 - Keep an optimization only when its measured gain justifies its readability
   and maintenance cost.

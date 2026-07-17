@@ -45,8 +45,11 @@ Use a different new file with `--shape deep` or `--shape mixed` to exercise the
 other tree shapes. `--nodes` can reduce the dataset for a smoke run. The
 scenario refuses to overwrite an existing path and reports tab-separated
 timings for generation, reopening, root pagination, mutations, and integrity
-checking. Large performance scenarios are intentionally separate from the
-ordinary correctness tests.
+checking. Interactive measurements use 100 samples and fail the scenario when
+their p95 exceeds the 5 ms engine budget. The generated workspace includes a
+metadata-rich page with multiple tags and references plus a deep path. Large
+performance scenarios are intentionally separate from ordinary correctness
+tests.
 
 ## CLI
 
