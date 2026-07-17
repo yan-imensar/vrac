@@ -74,6 +74,27 @@ fn a_node_can_be_read_after_reopening_the_database() {
 }
 
 #[test]
+fn the_frozen_v1_fixture_opens_through_the_public_api() {
+    let database = TestDatabase::new();
+    std::fs::write(
+        database.path(),
+        include_bytes!("fixtures/v1.vrac").as_slice(),
+    )
+    .expect("copy v1 fixture");
+
+    let engine = Engine::open(database.path()).expect("open v1 fixture");
+    let roots = children(&engine, None);
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].text, "Meeting about project X");
+    let decisions = children(&engine, Some(roots[0].id));
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0].text, "Decision: ship on Friday");
+    let report = engine.check().expect("check v1 fixture");
+    assert!(report.is_ok());
+    assert_eq!(report.node_count, 2);
+}
+
+#[test]
 fn new_databases_have_stable_format_markers_and_wal() {
     let database = TestDatabase::new();
     let engine = Engine::open(database.path()).expect("open database");

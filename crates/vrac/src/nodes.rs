@@ -15,6 +15,10 @@ struct StoredNode {
 }
 
 impl Engine {
+    /// Creates one node atomically.
+    ///
+    /// The parent and any relative placement reference are validated inside
+    /// the same transaction as the insertion.
     pub fn create_node(&mut self, input: CreateNode) -> Result<Node> {
         let CreateNode {
             parent_id,
@@ -42,10 +46,31 @@ impl Engine {
         })
     }
 
+    /// Reads one node by its stable identifier.
     pub fn node(&self, id: NodeId) -> Result<Option<Node>> {
         stored_node(&self.connection, id).map(|node| node.map(|stored| stored.node))
     }
 
+    /// Reads one ordered page of children for a parent or the root.
+    ///
+    /// Continue with the opaque [`Cursor`] returned in [`NodePage::next`].
+    /// Numeric storage positions are never exposed.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use vrac::{CreateNode, Engine, Page};
+    ///
+    /// let mut engine = Engine::open(":memory:")?;
+    /// engine.create_node(CreateNode::new("First"))?;
+    /// engine.create_node(CreateNode::new("Second"))?;
+    ///
+    /// let first = engine.children(None, Page { limit: 1, after: None })?;
+    /// let second = engine.children(None, Page { limit: 1, after: first.next })?;
+    /// assert_eq!(first.nodes[0].text, "First");
+    /// assert_eq!(second.nodes[0].text, "Second");
+    /// # Ok::<(), vrac::Error>(())
+    /// ```
     pub fn children(&self, parent_id: Option<NodeId>, page: Page) -> Result<NodePage> {
         validate_page(page)?;
         ensure_parent_exists(&self.connection, parent_id)?;
@@ -108,6 +133,7 @@ impl Engine {
         Ok(NodePage { nodes, next })
     }
 
+    /// Replaces a node's text atomically.
     pub fn set_text(&mut self, id: NodeId, text: String) -> Result<()> {
         let transaction = self.connection.transaction()?;
         let changed = transaction.execute(
@@ -121,6 +147,10 @@ impl Engine {
         Ok(())
     }
 
+    /// Moves a node and its subtree atomically.
+    ///
+    /// Descendants are not rewritten. The engine validates the destination,
+    /// rejects cycles, and preserves deterministic sibling order.
     pub fn move_node(&mut self, id: NodeId, destination: Destination) -> Result<()> {
         let transaction = self.connection.transaction()?;
         let moved = stored_node(&transaction, id)?.ok_or(Error::NodeNotFound(id))?;
@@ -158,7 +188,10 @@ impl Engine {
         Ok(())
     }
 
-    /// Generates test data in a single transaction.
+    /// Generates performance or test data in a single transaction.
+    ///
+    /// This utility does not participate in checkpoint restoration or normal
+    /// product behavior.
     pub fn generate_nodes(&mut self, count: u64, shape: GenerateShape) -> Result<()> {
         if count == 0 {
             return Ok(());

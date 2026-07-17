@@ -82,6 +82,28 @@ fn invalid_cli_input_has_a_distinct_exit_code() {
 }
 
 #[test]
+fn documented_engine_and_integrity_exit_codes_are_stable() {
+    let directory = tempfile::tempdir().expect("create temporary directory");
+    let database = directory.path().join("exit-codes.vrac");
+    let database = path_text(&database);
+    assert!(vrac(&["init", database]).status.success());
+
+    let missing = vrac(&["node", database, "00000000000000000000000000000000"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("node not found"));
+
+    std::fs::write(
+        database,
+        include_bytes!("fixtures/rootless-cycle.vrac").as_slice(),
+    )
+    .expect("copy invalid workspace fixture");
+
+    let check = vrac(&["check", database]);
+    assert_eq!(check.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&check.stdout).contains("unreachable\t2"));
+}
+
+#[test]
 fn children_can_stream_every_page_without_exposing_cursors() {
     let directory = tempfile::tempdir().expect("create temporary directory");
     let database = directory.path().join("large.vrac");

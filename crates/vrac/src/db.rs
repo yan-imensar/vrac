@@ -9,12 +9,28 @@ const APPLICATION_ID: i64 = 0x5652_4143;
 const MAX_REPORTED_ISSUES: usize = 100;
 const SCHEMA_SQL: &str = include_str!("../schema.sql");
 
+/// Synchronous owner of one Vrac workspace connection.
+///
+/// Business writes are atomic and methods never print or terminate the
+/// process. A graphical client should run the engine outside its UI thread.
 pub struct Engine {
     pub(crate) connection: Connection,
 }
 
 impl Engine {
-    /// Opens an existing Vrac database or creates a new one.
+    /// Opens an existing Vrac workspace or creates a new one.
+    ///
+    /// Existing files are accepted only when their application identifier,
+    /// schema version, and canonical schema match Vrac's format. File-backed
+    /// workspaces use foreign keys, WAL journaling, and `synchronous = FULL`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// let engine = vrac::Engine::open(":memory:")?;
+    /// assert!(engine.check()?.is_ok());
+    /// # Ok::<(), vrac::Error>(())
+    /// ```
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let mut connection = Connection::open(path)?;
         enable_foreign_keys(&connection)?;
@@ -24,7 +40,10 @@ impl Engine {
         Ok(Self { connection })
     }
 
-    /// Checks SQLite, foreign keys, and the absence of rootless components.
+    /// Checks SQLite integrity, foreign keys, and root reachability.
+    ///
+    /// This operation traverses the complete workspace and is intentionally
+    /// more expensive than normal reads and mutations.
     pub fn check(&self) -> Result<CheckReport> {
         let mut issues = Vec::new();
 
@@ -264,5 +283,28 @@ mod tests {
         assert_eq!(journal_mode, "memory");
         assert_eq!(synchronous, 2);
         assert_eq!(application_id, APPLICATION_ID);
+    }
+
+    #[test]
+    fn file_connections_enforce_required_pragmas() {
+        let directory = tempfile::tempdir().expect("create temporary directory");
+        let path = directory.path().join("pragmas.vrac");
+        let engine = Engine::open(path).expect("open file database");
+        let foreign_keys: i64 = engine
+            .connection
+            .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+            .expect("read foreign_keys");
+        let journal_mode: String = engine
+            .connection
+            .pragma_query_value(None, "journal_mode", |row| row.get(0))
+            .expect("read journal_mode");
+        let synchronous: i64 = engine
+            .connection
+            .pragma_query_value(None, "synchronous", |row| row.get(0))
+            .expect("read synchronous");
+
+        assert_eq!(foreign_keys, 1);
+        assert_eq!(journal_mode, "wal");
+        assert_eq!(synchronous, 2);
     }
 }

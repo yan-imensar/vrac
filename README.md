@@ -1,11 +1,12 @@
 # Vrac
 
 Vrac is a local-first outliner designed for fast capture and mental offloading.
-The repository currently contains the independent Rust engine and its CLI. The
-Tauri/Svelte interface remains outside the critical path until the engine is
-stable.
+The repository contains the v0.1 Rust engine and its CLI. The Tauri/Svelte
+interface remains outside the critical path until this engine contract is
+validated in real use.
 
 Contribution rules are documented in [`AGENTS.md`](AGENTS.md).
+The frozen SQLite workspace format is documented in [`FORMAT.md`](FORMAT.md).
 
 ## Layout
 
@@ -74,6 +75,23 @@ root node), and escaped text. Numeric storage positions are not exposed to
 clients. `children` reports when its bounded result has more entries;
 `children --all` traverses every page internally without exposing cursors.
 
+## Errors and exit codes
+
+The engine returns typed errors and never prints or terminates the process.
+Public error categories cover SQLite failures, invalid or unsupported
+workspaces, missing nodes or parents, invalid relative placement, cycles,
+pagination limits, and performance-data generation limits.
+
+The CLI writes node data and successful command results to standard output and
+diagnostics to standard error. Its exit codes are:
+
+| Code | Meaning |
+|---:|---|
+| `0` | Command succeeded; `check` found no issue. |
+| `1` | Engine, storage, or workspace operation failed. |
+| `2` | Command syntax, option, identifier, or other CLI input is invalid. |
+| `3` | `check` completed and reported integrity issues. |
+
 ## Database format
 
 A Vrac workspace is an ordinary SQLite file. Format version 1 uses
@@ -85,4 +103,5 @@ open.
 
 File-backed workspaces use foreign-key enforcement, WAL journaling, and
 `synchronous = FULL`. The canonical schema is
-[`crates/vrac/schema.sql`](crates/vrac/schema.sql).
+[`crates/vrac/schema.sql`](crates/vrac/schema.sql); its compatibility and
+migration rules are defined in [`FORMAT.md`](FORMAT.md).
