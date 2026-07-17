@@ -29,6 +29,23 @@ Build the optimized CLI with:
 cargo build --release -p vrac-cli
 ```
 
+## Performance scenario
+
+The reproducible performance scenario defaults to five million nodes and must
+run in release mode against a new file on a local, non-synchronized disk:
+
+```sh
+cargo run --release -p vrac-cli --example performance -- \
+  /local/path/vrac-5m-wide.vrac --shape wide
+```
+
+Use a different new file with `--shape deep` or `--shape mixed` to exercise the
+other tree shapes. `--nodes` can reduce the dataset for a smoke run. The
+scenario refuses to overwrite an existing path and reports tab-separated
+timings for generation, reopening, root pagination, mutations, and integrity
+checking. Large performance scenarios are intentionally separate from the
+ordinary correctness tests.
+
 ## CLI
 
 ```text
