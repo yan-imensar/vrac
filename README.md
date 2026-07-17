@@ -46,7 +46,9 @@ other tree shapes. `--nodes` can reduce the dataset for a smoke run. The
 scenario refuses to overwrite an existing path and reports tab-separated
 timings for generation, reopening, root pagination, synchronized mutations,
 package preparation, and integrity checking. Interactive measurements use 100
-samples and fail the scenario when their p95 exceeds the 5 ms engine budget.
+samples and fail the scenario when their p95 exceeds the 2 ms reference-machine
+engine budget. Platform-specific baselines will be measured on representative
+devices before release.
 The generated workspace includes a metadata-rich page with multiple tags and
 references plus a deep path. Large performance scenarios are intentionally
 separate from ordinary correctness tests. The scenario also creates and

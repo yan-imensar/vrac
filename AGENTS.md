@@ -95,12 +95,17 @@ covered by tests before it is considered complete.
 Several million nodes are a real constraint, but not a reason for speculative
 optimization.
 
-Interactive engine operations have a budget of 5 ms at p95 on the reference
+Interactive engine operations have a budget of 2 ms at p95 on the reference
 machine. This budget covers loading a page of 100 nodes, including a page where
 every node has tags and references, reading one node, creating or editing
 content, replacing tags, moving a node, and reading a representative deep path.
 Full integrity checks, exports, bulk generation, and complete-tree traversal are
 background operations and are not subject to this interactive budget.
+
+This is a regression gate for the reference machine, not an assumption that
+all storage hardware behaves identically. Before release, measure representative
+Apple, Android, Windows, and Linux devices and record their own baselines
+without weakening the reference-machine gate.
 
 - Keep frequent accesses indexed by parent, position, and identifier.
 - Avoid complete loads, updates proportional to subtree size, and needlessly

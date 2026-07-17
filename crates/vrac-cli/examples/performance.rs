@@ -12,7 +12,7 @@ const DEFAULT_NODE_COUNT: u64 = 5_000_000;
 const SAMPLE_COUNT: usize = 100;
 const METADATA_PAGE_SIZE: usize = 100;
 const DEEP_PATH_LENGTH: usize = 100;
-const INTERACTIVE_BUDGET: Duration = Duration::from_millis(5);
+const INTERACTIVE_BUDGET: Duration = Duration::from_millis(2);
 
 fn main() -> Result<(), Box<dyn StdError>> {
     if cfg!(debug_assertions) {
