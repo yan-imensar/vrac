@@ -92,9 +92,8 @@ restore operation yet.
 `Engine::open_synced` captures each product mutation in the same SQLite
 transaction as the data. The engine groups pending changes into small,
 immutable, checksummed `.vrac-sync` packages. Clients only publish and read the
-opaque bytes using the platform's provider: iCloud documents on Apple systems,
-OneDrive or a selected folder on Windows, a selected synchronized folder on
-Linux, and the Storage Access Framework on Android.
+opaque bytes through a provider folder or the equivalent platform storage API.
+The engine itself contains no provider-specific code.
 
 Packages are idempotent and ordered per device. Independent changes merge;
 true conflicts abort atomically and remain available instead of silently using
@@ -106,15 +105,13 @@ prevents an ordinary application restart from silently producing
 unsynchronized edits. There is no server, account system, CRDT, or permanent
 event history.
 
-The current graphical client implements the first provider adapter for iCloud
-Drive. The open SQLite database always remains in local application data.
-Enabling iCloud publishes a validated bootstrap checkpoint and immutable
-packages to the app's ubiquity container; joining streams that checkpoint to a
-new local file and runs a complete integrity check before opening it. Sync runs
-off the UI thread after local edits, when the window regains focus, or on
-request. Apple builds require the `iCloud.com.yanimensar.vrac` container and
-iCloud Documents capability to be enabled for the signed App ID; otherwise the
-workspace panel reports iCloud as unavailable.
+The current desktop client uses a user-selected synchronized folder. This can
+be a folder inside iCloud Drive, OneDrive, Dropbox, Syncthing, or another
+provider. The open SQLite database always remains in local application data.
+Enabling sync publishes a validated bootstrap checkpoint and immutable packages
+below the selected folder; joining streams that checkpoint to a new local file
+and runs a complete integrity check before opening it. Sync runs off the UI
+thread after local edits, when the window regains focus, or on request.
 
 ## Graphical client boundary
 
@@ -135,7 +132,7 @@ outside this slice.
 
 Native `View` menu items control webview display zoom. `File > Workspaces…` and
 `:workspace` open the same small chooser for local workspace creation,
-selection, and iCloud setup. `Default` preserves the original
+selection, and folder-sync setup. `Default` preserves the original
 `workspace.vrac`; additional workspaces are separate local databases.
 
 Tauri owns one synchronous engine on one dedicated standard thread. Thin
