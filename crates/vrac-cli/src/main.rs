@@ -3,7 +3,8 @@ use std::fmt;
 use std::process::ExitCode;
 
 use vrac::{
-    CheckIssue, CreateNode, Destination, Engine, GenerateShape, Node, NodeId, Page, Placement,
+    CheckIssue, CreateNode, Destination, Engine, GenerateShape, MAX_PAGE_SIZE, Node, NodeId, Page,
+    Placement,
 };
 
 const USAGE: &str = "\
@@ -13,7 +14,7 @@ Usage:
   vrac init <file>
   vrac add <file> [--parent <id>] [--first|--last|--before <id>|--after <id>] <text>
   vrac node <file> <id>
-  vrac children <file> [--parent <id>] [--limit <n>]
+  vrac children <file> [--parent <id>] [--limit <n>|--all]
   vrac set-text <file> <id> <text>
   vrac move <file> <id> [--parent <id>] [--first|--last|--before <id>|--after <id>]
   vrac check <file>
@@ -137,7 +138,8 @@ fn command_children(arguments: &[String]) -> Result<ExitCode, CliError> {
 
     let path = &arguments[0];
     let mut parent_id = None;
-    let mut limit = Page::default().limit;
+    let mut limit = None;
+    let mut all = false;
     let mut index = 1;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -150,22 +152,62 @@ fn command_children(arguments: &[String]) -> Result<ExitCode, CliError> {
                 parent_id = Some(parse_id(option_value(arguments, &mut index, "--parent")?)?);
             }
             "--limit" => {
+                if limit.is_some() {
+                    return Err(CliError::Usage(
+                        "--limit was provided more than once".into(),
+                    ));
+                }
                 let value = option_value(arguments, &mut index, "--limit")?;
-                limit = value
-                    .parse()
-                    .map_err(|_| CliError::Usage(format!("invalid limit: {value}")))?;
+                limit = Some(
+                    value
+                        .parse()
+                        .map_err(|_| CliError::Usage(format!("invalid limit: {value}")))?,
+                );
+            }
+            "--all" => {
+                if all {
+                    return Err(CliError::Usage("--all was provided more than once".into()));
+                }
+                all = true;
             }
             option => return Err(CliError::Usage(format!("unknown option: {option}"))),
         }
         index += 1;
     }
 
+    if all && limit.is_some() {
+        return Err(CliError::Usage(
+            "--all cannot be combined with --limit".into(),
+        ));
+    }
+
     let engine = Engine::open(path)?;
-    for node in engine
-        .children(parent_id, Page { limit, after: None })?
-        .nodes
-    {
-        print_node(&node);
+    let page_limit = limit.unwrap_or(if all {
+        MAX_PAGE_SIZE
+    } else {
+        Page::default().limit
+    });
+    let mut after = None;
+    loop {
+        let page = engine.children(
+            parent_id,
+            Page {
+                limit: page_limit,
+                after,
+            },
+        )?;
+        for node in page.nodes {
+            print_node(&node);
+        }
+
+        match page.next {
+            Some(next) if all => after = Some(next),
+            Some(_) => {
+                eprintln!("more children are available; use --all to print them");
+                break;
+            }
+            None => break,
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

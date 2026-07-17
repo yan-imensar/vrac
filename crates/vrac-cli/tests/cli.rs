@@ -82,6 +82,36 @@ fn invalid_cli_input_has_a_distinct_exit_code() {
 }
 
 #[test]
+fn children_can_stream_every_page_without_exposing_cursors() {
+    let directory = tempfile::tempdir().expect("create temporary directory");
+    let database = directory.path().join("large.vrac");
+    let database = database.to_str().expect("database path is UTF-8");
+
+    let generated = vrac(&["generate", database, "--nodes", "1001", "--shape", "wide"]);
+    assert!(generated.status.success());
+
+    let limited = vrac(&["children", database, "--limit", "2"]);
+    assert!(limited.status.success());
+    assert_eq!(limited.stdout.split(|byte| *byte == b'\n').count(), 3);
+    assert!(
+        String::from_utf8_lossy(&limited.stderr)
+            .contains("more children are available; use --all to print them")
+    );
+
+    let all = vrac(&["children", database, "--all"]);
+    assert!(all.status.success());
+    assert_eq!(all.stdout.split(|byte| *byte == b'\n').count(), 1002);
+    assert!(all.stderr.is_empty());
+
+    let conflicting = vrac(&["children", database, "--all", "--limit", "10"]);
+    assert_eq!(conflicting.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&conflicting.stderr)
+            .contains("--all cannot be combined with --limit")
+    );
+}
+
+#[test]
 fn the_cli_accepts_relative_placement_and_rejects_conflicting_options() {
     let directory = tempfile::tempdir().expect("create temporary directory");
     let database = directory.path().join("placement.vrac");
