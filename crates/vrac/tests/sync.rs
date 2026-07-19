@@ -179,6 +179,21 @@ fn a_fresh_workspace_remains_unsynchronized_until_a_device_is_supplied() {
 }
 
 #[test]
+fn pending_sync_state_clears_only_after_publication_is_confirmed() {
+    let directory = tempdir().expect("create temporary directory");
+    let path = directory.path().join("workspace.vrac");
+    let mut engine = Engine::open_synced(&path, device(1)).unwrap();
+    assert!(!engine.has_pending_sync_changes().unwrap());
+
+    engine.create_node(CreateNode::new("Pending")).unwrap();
+    assert!(engine.has_pending_sync_changes().unwrap());
+    let package = engine.next_sync_package().unwrap().unwrap();
+    assert!(engine.has_pending_sync_changes().unwrap());
+    engine.confirm_sync_package(&package).unwrap();
+    assert!(!engine.has_pending_sync_changes().unwrap());
+}
+
+#[test]
 fn an_active_workspace_rejects_another_local_device_identity() {
     let directory = tempdir().expect("create temporary directory");
     let path = directory.path().join("workspace.vrac");

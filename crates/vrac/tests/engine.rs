@@ -55,6 +55,7 @@ fn children(engine: &Engine, parent_id: Option<NodeId>) -> Vec<Node> {
 fn a_node_can_be_read_after_reopening_the_database() {
     let database = TestDatabase::new();
     let mut engine = Engine::open(database.path()).expect("open database");
+    let workspace_id = engine.workspace_id().expect("read workspace identity");
     let root = create_node(&mut engine, None, Placement::Last, "root");
     let child = create_node(&mut engine, Some(root.id), Placement::Last, "draft");
     engine
@@ -63,6 +64,7 @@ fn a_node_can_be_read_after_reopening_the_database() {
     drop(engine);
 
     let engine = Engine::open(database.path()).expect("reopen database");
+    assert_eq!(engine.workspace_id().unwrap(), workspace_id);
     assert_eq!(
         engine.node(root.id).expect("read root"),
         Some(Node {
@@ -77,6 +79,13 @@ fn a_node_can_be_read_after_reopening_the_database() {
             ..child
         })
     );
+}
+
+#[test]
+fn workspace_identifiers_round_trip_without_panicking_on_invalid_unicode() {
+    let id = vrac::WorkspaceId::from_bytes([0xab; vrac::WORKSPACE_ID_LENGTH]);
+    assert_eq!(id.to_string().parse(), Ok(id));
+    assert!("é".repeat(16).parse::<vrac::WorkspaceId>().is_err());
 }
 
 #[test]

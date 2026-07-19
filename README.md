@@ -105,15 +105,32 @@ prevents an ordinary application restart from silently producing
 unsynchronized edits. There is no server, account system, CRDT, or permanent
 event history.
 
-The current desktop client uses a user-selected synchronized folder. This can
-be a folder inside iCloud Drive, OneDrive, Dropbox, Syncthing, or another
-provider. The open SQLite database always remains in local application data.
-Enabling sync publishes a validated bootstrap checkpoint and immutable packages
-below the selected folder; joining streams that checkpoint to a new local file
-and runs a complete integrity check before opening it. Sync runs off the UI
-thread after local edits, every two seconds while the window is visible, when
-it regains focus, or on request. Any imported package refreshes the visible
-outline without interrupting an active edit.
+The current desktop client presents one concept: a user-selected workspace
+folder. Selecting an empty folder creates a workspace; selecting an existing
+Vrac folder opens it locally. Separate folders naturally represent separate
+workspaces such as Personal and Work. A folder may live inside iCloud Drive,
+OneDrive, Dropbox, Syncthing, or another provider.
+
+On first launch the folder chooser remains open until a usable workspace is
+selected. There is no unnamed or implicit workspace in the user interface.
+
+The selected folder visibly contains `workspace-id`, `checkpoint.vrac`, and a
+`changes` directory of immutable packages. The open SQLite database and its WAL
+remain in local application data as a disposable working copy. The application
+shows its local size and can remove it without deleting the workspace folder.
+It refuses removal while unpublished changes would be lost. A missing folder is
+never replaced by silently opening that local copy: Vrac asks the user to locate
+the workspace or remove the local copy. A new device validates the checkpoint
+and installs its own working copy automatically.
+
+A checkpoint is created with the workspace and refreshed immediately before a
+local copy is removed while the folder is available. There is no arbitrary
+timer yet; immutable changes remain sufficient to reconstruct the workspace.
+Package pruning and a periodic compaction policy are deferred until real usage
+demonstrates a threshold, avoiding a distributed cleanup protocol in the MVP.
+Sync runs off the UI thread after local edits, every two seconds while the
+window is visible, and when it regains focus. Any imported package refreshes
+the visible outline without interrupting an active edit.
 
 ### Local two-device test
 
@@ -126,10 +143,11 @@ VRAC_DEV_DATA_DIR=/tmp/vrac-device-a src-tauri/target/debug/vrac-app
 VRAC_DEV_DATA_DIR=/tmp/vrac-device-b src-tauri/target/debug/vrac-app
 ```
 
-Each directory receives its own device identity and workspace. The debug
-window title includes the directory name. Enable folder sync from the first
-window, choose the same provider folder from the second, then join the remote
-workspace. This override is absent from release builds.
+Each directory receives its own device identity and local database. The debug
+window title includes the directory name. Select an empty workspace folder in
+the first window, then select the same folder in the second. Creation and local
+installation are inferred from the folder contents; there is no separate
+enable or join action. This override is absent from release builds.
 
 ## Graphical client boundary
 
@@ -155,10 +173,12 @@ children. A compact, horizontally scrollable breadcrumb keeps the root and
 ancestors available for navigation, stopping at the parent so it never repeats
 the current heading.
 
-Native `View` menu items control webview display zoom. `File > Workspaces…` and
-`:workspace` open the same small chooser for local workspace creation,
-selection, and folder-sync setup. `Default` preserves the original
-`workspace.vrac`; additional workspaces are separate local databases.
+Native `View` menu items control webview display zoom. `File > Open
+Workspace…` and `:workspace` open the same small folder chooser. Selecting an
+empty folder creates a workspace and selecting an existing Vrac folder opens
+it; recent folders are listed as shortcuts. The chooser is mandatory while no
+usable workspace is selected. The panel reports local-copy size and exposes an
+explicit removal action that never deletes the selected folder.
 
 Tauri owns one synchronous engine on one dedicated standard thread. Thin
 commands adapt children, creation, text updates, paths, moves, deletion, node

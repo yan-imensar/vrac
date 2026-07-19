@@ -86,6 +86,25 @@ The stable filename is
 `<device>-<first:020>-<last:020>.vrac-sync`. Packages are immutable and opaque
 to provider clients.
 
+## Desktop workspace folder
+
+The desktop client maps one user-selected folder to one workspace through this
+published layout:
+
+```text
+<selected folder>/
+  workspace-id
+  checkpoint.vrac
+  changes/*.vrac-sync
+```
+
+`workspace-id` is the lowercase hexadecimal form of the database identity.
+`checkpoint.vrac` is a validated checkpoint and `changes` contains only the
+immutable package format above. During creation, `checkpoint.partial` is renamed
+before `workspace-id` publishes the completed layout. The live SQLite database,
+WAL, and shared-memory file are local application data and never part of this
+folder layout.
+
 ## Derived search data
 
 `node_search` is an FTS5 external-content table over `nodes.text`. It uses the
@@ -106,6 +125,11 @@ online backup API. It contains canonical state and synchronization frontiers,
 but no pending outbox or prepared batch from the source installation. The
 engine validates schema and integrity before publishing it and never copies an
 open database or its WAL directly.
+
+The desktop client creates `checkpoint.vrac` with the workspace and refreshes
+it before deleting an available local working copy. Immutable changes are not
+pruned in the current format, so replacing a checkpoint cannot lose a concurrent
+device's data. Periodic distributed compaction is intentionally deferred.
 
 ## Integrity
 

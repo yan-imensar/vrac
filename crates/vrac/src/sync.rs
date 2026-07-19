@@ -11,6 +11,7 @@ use crate::db::Engine;
 use crate::nodes::{decode_id, node_id_bytes};
 use crate::{
     CheckIssue, Error, OutgoingSyncPackage, Result, SYNC_DEVICE_ID_LENGTH, SyncApply, SyncDeviceId,
+    WorkspaceId,
 };
 
 const PACKAGE_MAGIC: &[u8; 8] = b"VRACSYNC";
@@ -20,7 +21,7 @@ const PACKAGE_HASH_LENGTH: usize = 32;
 const CAPTURED_TABLES: [&str; 3] = ["nodes", "node_tags", "node_references"];
 
 struct ParsedPackage<'a> {
-    workspace_id: [u8; 16],
+    workspace_id: WorkspaceId,
     device_id: SyncDeviceId,
     first_sequence: u64,
     last_sequence: u64,
@@ -271,6 +272,23 @@ pub(crate) fn commit_mutation(
 }
 
 impl Engine {
+    /// Returns the stable identity shared by every copy of this workspace.
+    pub fn workspace_id(&self) -> Result<WorkspaceId> {
+        workspace_id(&self.connection)
+    }
+
+    /// Returns whether this local copy still owns unpublished changes.
+    pub fn has_pending_sync_changes(&self) -> Result<bool> {
+        self.sync_device_id.ok_or(Error::SyncNotEnabled)?;
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sync_outbox UNION ALL SELECT 1 FROM sync_batch)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
     /// Returns the next immutable package that a client must publish.
     ///
     /// All changes currently waiting are grouped. A prepared package is
@@ -647,7 +665,7 @@ fn stored_batch(
         .transpose()
 }
 
-fn workspace_id(connection: &Connection) -> Result<[u8; 16]> {
+fn workspace_id(connection: &Connection) -> Result<WorkspaceId> {
     let bytes: Vec<u8> = connection.query_row(
         "SELECT workspace_id FROM workspace WHERE singleton = 1",
         [],
@@ -655,6 +673,7 @@ fn workspace_id(connection: &Connection) -> Result<[u8; 16]> {
     )?;
     bytes
         .try_into()
+        .map(WorkspaceId::from_bytes)
         .map_err(|_| Error::InvalidDatabase("the workspace identity is invalid".into()))
 }
 
@@ -693,7 +712,7 @@ fn sequence_allow_zero(value: i64) -> Result<u64> {
 }
 
 fn encode_package(
-    workspace_id: [u8; 16],
+    workspace_id: WorkspaceId,
     device_id: SyncDeviceId,
     first_sequence: u64,
     last_sequence: u64,
@@ -702,7 +721,7 @@ fn encode_package(
     let mut bytes = Vec::with_capacity(PACKAGE_HEADER_LENGTH + payload.len() + PACKAGE_HASH_LENGTH);
     bytes.extend_from_slice(PACKAGE_MAGIC);
     bytes.push(PACKAGE_VERSION);
-    bytes.extend_from_slice(&workspace_id);
+    bytes.extend_from_slice(workspace_id.as_bytes());
     bytes.extend_from_slice(device_id.as_bytes());
     bytes.extend_from_slice(&first_sequence.to_be_bytes());
     bytes.extend_from_slice(&last_sequence.to_be_bytes());
@@ -736,7 +755,7 @@ fn parse_package(bytes: &[u8]) -> Result<ParsedPackage<'_>> {
             "unsupported package version".into(),
         ));
     }
-    let workspace_id = take::<16>(&mut header)?;
+    let workspace_id = WorkspaceId::from_bytes(take::<16>(&mut header)?);
     let device_id = SyncDeviceId::from_bytes(take::<SYNC_DEVICE_ID_LENGTH>(&mut header)?);
     let first_sequence = u64::from_be_bytes(take::<8>(&mut header)?);
     let last_sequence = u64::from_be_bytes(take::<8>(&mut header)?);
