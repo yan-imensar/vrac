@@ -1,6 +1,6 @@
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
-use vrac::{CheckIssue, CreateNode, Engine, Error, ReferenceInput};
+use vrac::{CheckIssue, CreateNode, Engine, Error, ReferenceInput, SyncDeviceId};
 
 #[test]
 fn a_checkpoint_is_an_independent_valid_snapshot_of_an_open_workspace() {
@@ -107,4 +107,81 @@ fn an_invalid_snapshot_is_not_published() {
             ))
     ));
     assert!(!destination.exists());
+}
+
+#[test]
+fn restoring_a_checkpoint_is_atomic_and_keeps_the_replaced_state_recoverable() {
+    let directory = tempdir().expect("create temporary directory");
+    let source_path = directory.path().join("source.vrac");
+    let checkpoint_path = directory.path().join("checkpoint.vrac");
+    let recovery_path = directory.path().join("recovery.vrac");
+    let mut engine =
+        Engine::open_synced(&source_path, SyncDeviceId::from_bytes([1; 16])).expect("open source");
+    let original = engine
+        .create_node(CreateNode::new("Original"))
+        .expect("create original node");
+    engine
+        .checkpoint(&checkpoint_path)
+        .expect("create checkpoint");
+    engine
+        .set_tags(original.id, vec!["changed".into()])
+        .expect("change original node");
+    let later = engine
+        .create_node(CreateNode::new("Created later"))
+        .expect("create later node");
+
+    engine
+        .restore_checkpoint(&checkpoint_path, &recovery_path)
+        .expect("restore checkpoint");
+
+    assert!(engine.node(later.id).unwrap().is_none());
+    assert!(engine.node(original.id).unwrap().unwrap().tags.is_empty());
+    assert!(engine.has_pending_sync_changes().unwrap());
+    let recovery = Engine::open(&recovery_path).expect("open recovery checkpoint");
+    assert_eq!(
+        recovery.node(later.id).unwrap().unwrap().text,
+        "Created later"
+    );
+    assert_eq!(
+        recovery.node(original.id).unwrap().unwrap().tags,
+        ["changed"]
+    );
+}
+
+#[test]
+fn a_checkpoint_from_another_workspace_cannot_be_restored() {
+    let directory = tempdir().expect("create temporary directory");
+    let source_path = directory.path().join("source.vrac");
+    let foreign_path = directory.path().join("foreign.vrac");
+    let recovery_path = directory.path().join("recovery.vrac");
+    let mut source = Engine::open(&source_path).expect("open source");
+    let foreign =
+        Engine::open(directory.path().join("foreign-source.vrac")).expect("open foreign workspace");
+    foreign
+        .checkpoint(&foreign_path)
+        .expect("create foreign checkpoint");
+
+    assert!(matches!(
+        source.restore_checkpoint(&foreign_path, &recovery_path),
+        Err(Error::CheckpointWorkspaceMismatch)
+    ));
+    assert!(!recovery_path.exists());
+}
+
+#[test]
+fn an_active_workspace_cannot_be_used_as_its_own_restore_source() {
+    let directory = tempdir().expect("create temporary directory");
+    let source_path = directory.path().join("source.vrac");
+    let recovery_path = directory.path().join("recovery.vrac");
+    let mut source = Engine::open(&source_path).expect("open source");
+    source
+        .create_node(CreateNode::new("Keep me"))
+        .expect("create node");
+
+    assert!(matches!(
+        source.restore_checkpoint(&source_path, &recovery_path),
+        Err(Error::RestoreSourceIsActiveWorkspace)
+    ));
+    assert!(!recovery_path.exists());
+    assert_eq!(source.check().unwrap().node_count, 1);
 }

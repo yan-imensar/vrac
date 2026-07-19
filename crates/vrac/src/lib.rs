@@ -545,6 +545,10 @@ pub enum Error {
     CheckpointDestinationExists,
     /// A generated checkpoint failed its complete integrity validation.
     InvalidCheckpoint(CheckReport),
+    /// A restore checkpoint belongs to another workspace.
+    CheckpointWorkspaceMismatch,
+    /// The active workspace was supplied as its own restore checkpoint.
+    RestoreSourceIsActiveWorkspace,
     /// Synchronization was requested on an engine opened without a device ID.
     SyncNotEnabled,
     /// A synchronized workspace is already active under another device ID.
@@ -657,6 +661,12 @@ impl fmt::Display for Error {
                 "checkpoint validation reported {} integrity issues",
                 report.issues.len()
             ),
+            Self::CheckpointWorkspaceMismatch => {
+                formatter.write_str("checkpoint belongs to another workspace")
+            }
+            Self::RestoreSourceIsActiveWorkspace => {
+                formatter.write_str("the active workspace cannot restore itself")
+            }
             Self::SyncNotEnabled => formatter.write_str(
                 "synchronization requires opening the workspace with a device identifier",
             ),

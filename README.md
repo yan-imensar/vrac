@@ -82,10 +82,15 @@ before publishing the destination, never copies an open database or its WAL,
 and never overwrites an existing file. The resulting file is an ordinary
 workspace that can be opened directly.
 
+`Engine::restore_checkpoint(checkpoint, recovery)` validates that the
+checkpoint belongs to the current workspace, creates `recovery` from the
+current state, then restores canonical content in one transaction. On a
+synchronized engine the restoration is captured like any other mutation, so it
+can be published safely instead of being undone by newer remote packages.
+
 Checkpoint creation is synchronous and proportional to the complete workspace
 size. A client must schedule it outside its interactive execution path. The
-engine deliberately provides no scheduler, retention policy, or destructive
-restore operation yet.
+engine deliberately provides no scheduler or retention policy.
 
 ## Personal synchronization
 
@@ -132,6 +137,15 @@ Sync runs off the UI thread after local edits, every two seconds while the
 window is visible, and when it regains focus. Any imported package refreshes
 the visible outline without interrupting an active edit.
 
+The desktop client also keeps up to seven independent local recovery backups
+per workspace in application data. It creates at most one per day, only after
+the workspace changed, using a separate SQLite connection so normal editing
+does not wait for the complete copy and integrity validation. Backups are
+listed in the workspace panel. Restoring one first synchronizes, preserves the
+replaced state as another recovery backup, restores atomically, and publishes
+the restoration. Removing a local copy also removes its local recovery
+backups; it never removes the user-selected workspace folder.
+
 ### Local two-device test
 
 Debug builds accept `VRAC_DEV_DATA_DIR` to isolate local application state. Two
@@ -167,6 +181,11 @@ controller drives normal and insert modes; the bottom status control toggles it
 without changing engine behavior. `:` and `/` expand the same bottom area for
 commands and indexed node search. Backlinks, undo history, virtual lists,
 mobile controls, and maintenance commands remain outside this slice.
+
+The bottom Vim status control is the single notification surface. It briefly
+expands for synchronization results, recovery operations, and useful errors,
+then retracts to the current mode. `:sync` triggers an immediate
+synchronization; successful no-op background rounds remain silent.
 
 Zoom shows the current node as a restrained editable heading above its ordinary
 children. A compact, horizontally scrollable breadcrumb keeps the root and

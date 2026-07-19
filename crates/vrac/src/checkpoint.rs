@@ -7,6 +7,7 @@ use tempfile::NamedTempFile;
 
 use crate::db::Engine;
 use crate::schema::prepare_database;
+use crate::sync::{capture_session, commit_mutation};
 use crate::{Error, Result};
 
 impl Engine {
@@ -58,6 +59,82 @@ impl Engine {
             Err(error) => Err(error.into()),
         }
     }
+
+    /// Restores canonical workspace content from a validated checkpoint.
+    ///
+    /// `recovery` receives a complete checkpoint of the current state before
+    /// any content changes. The restored content is committed atomically as a
+    /// normal mutation, so a synchronized engine can publish the restoration
+    /// to its other devices. Both checkpoints must belong to this workspace.
+    ///
+    /// This is a background operation proportional to workspace size.
+    pub fn restore_checkpoint(
+        &mut self,
+        checkpoint: impl AsRef<Path>,
+        recovery: impl AsRef<Path>,
+    ) -> Result<()> {
+        let checkpoint = checkpoint.as_ref();
+        let active_path: String = self.connection.query_row(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'",
+            [],
+            |row| row.get(0),
+        )?;
+        if !active_path.is_empty()
+            && fs::canonicalize(checkpoint)? == fs::canonicalize(active_path)?
+        {
+            return Err(Error::RestoreSourceIsActiveWorkspace);
+        }
+        let candidate = checkpoint_engine(checkpoint)?;
+        let report = candidate.check()?;
+        if !report.is_ok() {
+            return Err(Error::InvalidCheckpoint(report));
+        }
+        if candidate.workspace_id()? != self.workspace_id()? {
+            return Err(Error::CheckpointWorkspaceMismatch);
+        }
+        drop(candidate);
+
+        self.checkpoint(recovery)?;
+        let path = checkpoint.to_str().ok_or_else(|| {
+            Error::Io(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "checkpoint path is not valid Unicode",
+            ))
+        })?;
+        self.connection
+            .execute("ATTACH DATABASE ?1 AS restore_source", [path])?;
+        let restored = (|| {
+            let captured = capture_session(&self.connection, self.sync_device_id)?;
+            let transaction = self.connection.unchecked_transaction()?;
+            transaction.pragma_update(None, "defer_foreign_keys", true)?;
+            transaction.execute("DELETE FROM node_references", [])?;
+            transaction.execute("DELETE FROM node_tags", [])?;
+            transaction.execute("DELETE FROM nodes", [])?;
+            transaction.execute(
+                "INSERT INTO nodes (id, parent_id, position, text)
+                 SELECT id, parent_id, position, text FROM restore_source.nodes",
+                [],
+            )?;
+            transaction.execute(
+                "INSERT INTO node_tags (node_id, tag)
+                 SELECT node_id, tag FROM restore_source.node_tags",
+                [],
+            )?;
+            transaction.execute(
+                "INSERT INTO node_references (source_id, start_byte, end_byte, target_id)
+                 SELECT source_id, start_byte, end_byte, target_id
+                 FROM restore_source.node_references",
+                [],
+            )?;
+            commit_mutation(transaction, captured, self.sync_device_id)
+        })();
+        let detached = self
+            .connection
+            .execute_batch("DETACH DATABASE restore_source");
+        restored?;
+        detached?;
+        Ok(())
+    }
 }
 
 fn remove_local_sync_queue(path: &Path) -> Result<()> {
@@ -92,11 +169,14 @@ fn remove_local_sync_queue(path: &Path) -> Result<()> {
 }
 
 fn validate_checkpoint(path: &Path) -> Result<crate::CheckReport> {
+    checkpoint_engine(path)?.check()
+}
+
+fn checkpoint_engine(path: &Path) -> Result<Engine> {
     let mut connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     prepare_database(&mut connection)?;
-    Engine {
+    Ok(Engine {
         connection,
         sync_device_id: None,
-    }
-    .check()
+    })
 }
