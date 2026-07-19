@@ -62,6 +62,21 @@ fn checkpoint_never_overwrites_an_existing_destination() {
 }
 
 #[test]
+fn checkpoint_leaves_no_temporary_sidecars() {
+    let directory = tempdir().expect("create temporary directory");
+    let destination = directory.path().join("checkpoint.vrac");
+    let engine = Engine::open(":memory:").expect("open source");
+
+    engine.checkpoint(&destination).expect("create checkpoint");
+
+    let files: Vec<_> = std::fs::read_dir(directory.path())
+        .expect("read checkpoint directory")
+        .map(|entry| entry.expect("read directory entry").file_name())
+        .collect();
+    assert_eq!(files, ["checkpoint.vrac"]);
+}
+
+#[test]
 fn an_invalid_snapshot_is_not_published() {
     let directory = tempdir().expect("create temporary directory");
     let source_path = directory.path().join("source.vrac");

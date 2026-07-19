@@ -204,6 +204,17 @@ fn main() -> Result<(), Box<dyn StdError>> {
     })?;
     record_interactive("search_p95", search_p95)?;
 
+    let tags_p95 = measure_p95(|| {
+        let tags = engine.tags("dec", 8)?;
+        if tags.first().is_none_or(|tag| tag != "decision") {
+            return Err(vrac::Error::InvalidDatabase(
+                "the tag completion performance probe was not found".into(),
+            ));
+        }
+        Ok(())
+    })?;
+    record_interactive("tag_completion_p95", tags_p95)?;
+
     let mut deletion_nodes = Vec::with_capacity(SAMPLE_COUNT);
     for index in 0..SAMPLE_COUNT {
         let mut input = CreateNode::new(format!("Deletion probe {index}"));

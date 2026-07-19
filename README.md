@@ -59,8 +59,8 @@ validates a companion
 that background operation.
 
 The same generated workspace drives a bounded-memory regression scenario. It
-repeats the frontend's root page, metadata-rich page, indexed search, and deep
-path reads without retaining their results:
+repeats the frontend's root page, metadata-rich page, indexed node and tag
+completion, and deep path reads without retaining their results:
 
 ```sh
 cargo run --release -p vrac-cli --example memory -- \
@@ -111,7 +111,25 @@ provider. The open SQLite database always remains in local application data.
 Enabling sync publishes a validated bootstrap checkpoint and immutable packages
 below the selected folder; joining streams that checkpoint to a new local file
 and runs a complete integrity check before opening it. Sync runs off the UI
-thread after local edits, when the window regains focus, or on request.
+thread after local edits, every two seconds while the window is visible, when
+it regains focus, or on request. Any imported package refreshes the visible
+outline without interrupting an active edit.
+
+### Local two-device test
+
+Debug builds accept `VRAC_DEV_DATA_DIR` to isolate local application state. Two
+processes can therefore represent two devices without ever sharing an open
+SQLite database:
+
+```sh
+VRAC_DEV_DATA_DIR=/tmp/vrac-device-a src-tauri/target/debug/vrac-app
+VRAC_DEV_DATA_DIR=/tmp/vrac-device-b src-tauri/target/debug/vrac-app
+```
+
+Each directory receives its own device identity and workspace. The debug
+window title includes the directory name. Enable folder sync from the first
+window, choose the same provider folder from the second, then join the remote
+workspace. This override is absent from release builds.
 
 ## Graphical client boundary
 
@@ -124,11 +142,18 @@ The token is temporary continuation state, not workspace data.
 
 The interface implements the dark outline surface, lazy branch expansion,
 text editing, focused zoom, bounded pagination, node search, deletion, and
-indentation. A central, optional Vim controller drives normal and insert modes;
-the bottom status control toggles it without changing engine behavior. `:` and
-`/` expand the same bottom area for commands and indexed node search. Backlinks,
-undo history, virtual lists, mobile controls, and maintenance commands remain
-outside this slice.
+indentation. Typing `[[` searches reference targets and offers a new root node
+when no matching target exists. Typing `#` lists canonical tags and can apply a
+new one without storing the marker in node text. A central, optional Vim
+controller drives normal and insert modes; the bottom status control toggles it
+without changing engine behavior. `:` and `/` expand the same bottom area for
+commands and indexed node search. Backlinks, undo history, virtual lists,
+mobile controls, and maintenance commands remain outside this slice.
+
+Zoom shows the current node as a restrained editable heading above its ordinary
+children. A compact, horizontally scrollable breadcrumb keeps the root and
+ancestors available for navigation, stopping at the parent so it never repeats
+the current heading.
 
 Native `View` menu items control webview display zoom. `File > Workspaces…` and
 `:workspace` open the same small chooser for local workspace creation,
@@ -136,10 +161,10 @@ selection, and folder-sync setup. `Default` preserves the original
 `workspace.vrac`; additional workspaces are separate local databases.
 
 Tauri owns one synchronous engine on one dedicated standard thread. Thin
-commands adapt children, creation, text updates, paths, moves, deletion, and
-search; they contain no SQL or product rules. Switching workspaces opens the
-new database on that thread, while checkpoint and provider work runs outside
-the UI thread.
+commands adapt children, creation, text updates, paths, moves, deletion, node
+search, and tag completion; they contain no SQL or product rules. Switching
+workspaces opens the new database on that thread, while checkpoint and provider
+work runs outside the UI thread.
 
 ## CLI
 

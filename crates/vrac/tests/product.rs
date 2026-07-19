@@ -142,6 +142,38 @@ fn tags_are_canonical_sets_stored_outside_text() {
 }
 
 #[test]
+fn tag_completion_is_canonical_bounded_and_globally_deduplicated() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let first = create(&mut engine, "First");
+    let second = create(&mut engine, "Second");
+    engine
+        .set_tags(
+            first.id,
+            vec!["Meeting".into(), "DÉCISION".into(), "idea".into()],
+        )
+        .expect("set first tags");
+    engine
+        .set_tags(second.id, vec!["meeting".into(), "decision".into()])
+        .expect("set second tags");
+
+    assert_eq!(
+        engine.tags("", 8).expect("list tags"),
+        ["decision", "décision", "idea", "meeting"]
+    );
+    assert_eq!(engine.tags(" ME ", 8).unwrap(), ["meeting"]);
+    assert_eq!(engine.tags("DÉ", 8).unwrap(), ["décision"]);
+    assert_eq!(engine.tags("d", 1).unwrap(), ["decision"]);
+    assert!(matches!(
+        engine.tags("two words", 8),
+        Err(Error::InvalidTag(_))
+    ));
+    assert!(matches!(
+        engine.tags("", 0),
+        Err(Error::InvalidPageLimit { .. })
+    ));
+}
+
+#[test]
 fn invalid_tags_do_not_replace_existing_tags() {
     let mut engine = Engine::open(":memory:").expect("open database");
     let node = create(&mut engine, "Node");
@@ -522,4 +554,28 @@ fn metadata_queries_use_their_dedicated_indexes() {
             "query does not use {expected_index}: {plan:?}"
         );
     }
+
+    let mut statement = connection
+        .prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT DISTINCT tag
+             FROM node_tags INDEXED BY node_tags_by_tag
+             WHERE tag >= ?1 AND tag < ?2
+             ORDER BY tag
+             LIMIT ?3",
+        )
+        .expect("prepare tag completion query plan");
+    let plan: Vec<String> = statement
+        .query_map(params!["dec", "ded", 8], |row| row.get(3))
+        .expect("read tag completion query plan")
+        .collect::<rusqlite::Result<_>>()
+        .expect("collect tag completion query plan");
+    assert!(
+        plan.iter().any(|step| step.contains("node_tags_by_tag")),
+        "tag completion does not use node_tags_by_tag: {plan:?}"
+    );
+    assert!(
+        plan.iter().all(|step| !step.contains("USE TEMP B-TREE")),
+        "tag completion sorts outside the index: {plan:?}"
+    );
 }

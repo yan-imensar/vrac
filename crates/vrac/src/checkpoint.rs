@@ -81,6 +81,13 @@ fn remove_local_sync_queue(path: &Path) -> Result<()> {
     transaction.execute("DELETE FROM sync_outbox", [])?;
     transaction.execute("UPDATE sync_devices SET next_sequence = NULL", [])?;
     transaction.commit()?;
+    let journal_mode: String =
+        connection.query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))?;
+    if !journal_mode.eq_ignore_ascii_case("delete") {
+        return Err(Error::StorageConfiguration(format!(
+            "SQLite could not make the checkpoint standalone: selected journal mode {journal_mode:?}"
+        )));
+    }
     Ok(())
 }
 

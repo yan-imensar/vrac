@@ -88,6 +88,7 @@ fn exercise_interactive_reads(
         },
     )?);
     std::hint::black_box(engine.search("decision 42", SEARCH_LIMIT)?);
+    std::hint::black_box(engine.tags("dec", SEARCH_LIMIT)?);
     std::hint::black_box(engine.path(deep_leaf)?);
     Ok(())
 }

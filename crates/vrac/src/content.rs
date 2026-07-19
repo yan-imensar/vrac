@@ -5,7 +5,9 @@ use rusqlite::{Connection, params, params_from_iter};
 use crate::db::Engine;
 use crate::nodes::{decode_id, node_exists, node_id_bytes};
 use crate::sync::{capture_session, commit_mutation};
-use crate::{CheckIssue, Error, Node, NodeId, NodeReference, ReferenceInput, Result};
+use crate::{
+    CheckIssue, Error, MAX_PAGE_SIZE, Node, NodeId, NodeReference, ReferenceInput, Result,
+};
 
 const HYDRATION_BATCH_SIZE: usize = 1_000;
 
@@ -69,6 +71,58 @@ impl Engine {
         commit_mutation(transaction, captured, self.sync_device_id)?;
         Ok(())
     }
+
+    /// Returns canonical tags beginning with `prefix` in lexical order.
+    ///
+    /// The result is bounded and uses the inverse tag index. An empty prefix
+    /// returns the first tags, which is useful when opening a completion list.
+    pub fn tags(&self, prefix: &str, limit: usize) -> Result<Vec<String>> {
+        if !(1..=MAX_PAGE_SIZE).contains(&limit) {
+            return Err(Error::InvalidPageLimit {
+                limit,
+                maximum: MAX_PAGE_SIZE,
+            });
+        }
+        let prefix = canonicalize_tag_prefix(prefix)?;
+        let mut tags = Vec::with_capacity(limit);
+        if prefix.is_empty() {
+            let mut statement = self.connection.prepare_cached(
+                "SELECT DISTINCT tag
+                 FROM node_tags INDEXED BY node_tags_by_tag
+                 ORDER BY tag
+                 LIMIT ?1",
+            )?;
+            let rows = statement.query_map([limit as i64], |row| row.get(0))?;
+            for tag in rows {
+                tags.push(tag?);
+            }
+            return Ok(tags);
+        }
+
+        let upper = lexical_successor(&prefix);
+        let sql = if upper.is_some() {
+            "SELECT DISTINCT tag
+             FROM node_tags INDEXED BY node_tags_by_tag
+             WHERE tag >= ?1 AND tag < ?2
+             ORDER BY tag
+             LIMIT ?3"
+        } else {
+            "SELECT DISTINCT tag
+             FROM node_tags INDEXED BY node_tags_by_tag
+             WHERE tag >= ?1
+             ORDER BY tag
+             LIMIT ?2"
+        };
+        let mut statement = self.connection.prepare_cached(sql)?;
+        let mut rows = match upper {
+            Some(upper) => statement.query(params![prefix, upper, limit as i64])?,
+            None => statement.query(params![prefix, limit as i64])?,
+        };
+        while let Some(row) = rows.next()? {
+            tags.push(row.get(0)?);
+        }
+        Ok(tags)
+    }
 }
 
 pub(crate) fn canonicalize_tags(tags: Vec<String>) -> Result<Vec<String>> {
@@ -95,6 +149,37 @@ fn canonicalize_tag(original: &str) -> Result<String> {
         return Err(Error::InvalidTag(original.into()));
     }
     Ok(tag)
+}
+
+fn canonicalize_tag_prefix(original: &str) -> Result<String> {
+    let prefix: String = original
+        .trim()
+        .chars()
+        .flat_map(char::to_lowercase)
+        .collect();
+    if prefix
+        .chars()
+        .any(|character| character.is_whitespace() || character == '#')
+    {
+        return Err(Error::InvalidTag(original.into()));
+    }
+    Ok(prefix)
+}
+
+fn lexical_successor(value: &str) -> Option<String> {
+    let mut characters: Vec<char> = value.chars().collect();
+    for index in (0..characters.len()).rev() {
+        let mut scalar = characters[index] as u32 + 1;
+        if scalar == 0xd800 {
+            scalar = 0xe000;
+        }
+        if let Some(next) = char::from_u32(scalar) {
+            characters[index] = next;
+            characters.truncate(index + 1);
+            return Some(characters.into_iter().collect());
+        }
+    }
+    None
 }
 
 pub(crate) fn check_content(
