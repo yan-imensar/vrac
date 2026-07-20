@@ -102,6 +102,15 @@ content, replacing tags, moving a node, and reading a representative deep path.
 Full integrity checks, exports, bulk generation, and complete-tree traversal are
 background operations and are not subject to this interactive budget.
 
+The packaged macOS reference product has separate release gates: the app
+bundle stays below 8 MiB, a fresh-state launch reaches its first usable view in
+under 1.5 seconds, the complete app stays below 96 MiB of physical footprint on
+the initial view and 224 MiB after the 100-create/100-edit/20-reload stress
+scenario, and steady idle CPU remains below 1%. Interactive create, persisted
+edit, and full 100-row reload samples must complete before the next 60 Hz paint
+at p95. Measure physical footprint across the app and its dedicated WebKit
+helpers; summed RSS double-counts shared memory.
+
 This is a regression gate for the reference machine, not an assumption that
 all storage hardware behaves identically. Before release, measure representative
 Apple, Android, Windows, and Linux devices and record their own baselines
@@ -114,6 +123,8 @@ without weakening the reference-machine gate.
   representative tree shape.
 - After every engine or schema change that can affect interactive work, run the
   five-million-node release scenario and verify every reported interactive p95.
+- After frontend or Tauri changes that can affect rendering, startup, IPC, or
+  retained state, rerun the packaged product scenario on the reference Mac.
 - The performance dataset must exercise plain nodes, metadata-rich pages,
   multiple tags, resolved references, target renames, content and tag edits,
   sibling moves, and paths at several depths.
@@ -122,6 +133,10 @@ without weakening the reference-machine gate.
   and maintenance cost.
 - Do not claim a performance property without a benchmark or query-plan
   analysis that demonstrates it.
+
+Desktop WebKit measurements are not mobile claims. Record separate packaged
+baselines on representative iOS, Android, Windows, and Linux devices before
+release.
 
 A test with little data validates correctness, not scalability.
 
@@ -156,6 +171,9 @@ be run.
 - Do not add future functionality merely to make an abstraction feel complete.
 - Keep code, comments, documentation, error messages, and CLI output in
   English.
+- After a change passes its required validation, commit it before starting
+  unrelated work. Leave validated work uncommitted only when the user
+  explicitly requests it.
 
 A change is complete when the requested behavior exists, invariants are
 preserved, relevant tests pass, and affected documentation is consistent.
