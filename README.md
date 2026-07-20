@@ -52,15 +52,15 @@ samples and fail the scenario when their p95 exceeds the 2 ms reference-machine
 engine budget. Platform-specific baselines will be measured on representative
 devices before release.
 The generated workspace includes a metadata-rich page with multiple tags and
-references plus a deep path. Large performance scenarios are intentionally
-separate from ordinary correctness tests. The scenario also creates and
-validates a companion
+references, contextual backlink pages, their relevant tag counts, plus a deep
+path. Large performance scenarios are intentionally separate from
+ordinary correctness tests. The scenario also creates and validates a companion
 `*.checkpoint.vrac` file without applying the interactive latency budget to
 that background operation.
 
 The same generated workspace drives a bounded-memory regression scenario. It
 repeats the frontend's root page, metadata-rich page, indexed node and tag
-completion, and deep path reads without retaining their results:
+completion, Journal-day read, and deep path reads without retaining results:
 
 ```sh
 cargo run --release -p vrac-cli --example memory -- \
@@ -73,6 +73,23 @@ growth budget. This is an engine budget, not the total Tauri/WebView process
 budget. Full integrity checks remain separate because they traverse the entire
 workspace; they must not run on the UI thread. Actual packaged applications
 will receive device-level memory baselines before mobile release.
+
+## Packaged product baseline
+
+The complete release app has its own reference-Mac gate in addition to the
+engine scenarios. The current 6.1 MiB macOS bundle reached the first usable
+view in 0.65 seconds and used about 82 MiB of physical footprint across Vrac
+and its WebKit helpers. A stress pass containing 100 creates, 100 persisted
+edits, and 20 complete 100-row reloads used about 199 MiB and remained below
+the next 60 Hz paint at p95 for every measured interaction. Steady idle CPU was
+0.1%.
+
+The local gates are 8 MiB for the bundle, 1.5 seconds for startup, 96 MiB for
+the initial view, 224 MiB after the stress pass, and 1% idle CPU. These are
+regression limits for the reference Mac, not estimates for iOS, Android,
+Windows, or Linux. Each packaged target requires its own baseline before
+release; shared-memory-aware physical footprint is used on macOS because
+summed process RSS overstates WebKit usage.
 
 ## Checkpoints
 
@@ -174,23 +191,40 @@ The token is temporary continuation state, not workspace data.
 
 The interface implements the dark outline surface, lazy branch expansion,
 text editing, focused zoom, bounded pagination, node search, deletion, and
-indentation. Typing `[[` searches reference targets and offers a new root node
-when no matching target exists. Typing `#` lists canonical tags and can apply a
+indentation. Every workspace opens on today's protected Journal node. Journal
+days are visible nodes tagged `journal`, so they can be referenced normally;
+typing a missing ISO date such as `[[2026-07-22]]` creates that day below
+Journal. Root navigation is hidden by default and can be enabled for the
+current session with `:root on`, then hidden again with `:root off`. Typing
+`[[` searches other reference targets and offers a new root node when no
+matching target exists. Typing `#` lists canonical tags and can apply a
 new one without storing the marker in node text. A central, optional Vim
 controller drives normal and insert modes; the bottom status control toggles it
 without changing engine behavior. `:` and `/` expand the same bottom area for
-commands and indexed node search. Backlinks, undo history, virtual lists,
-mobile controls, and maintenance commands remain outside this slice.
+commands and indexed node search. Session undo and redo are available through
+`:undo` / `:redo`, Vim `u` / `Ctrl-R`, and the platform `Undo` / `Redo`
+shortcuts. When the current bullet has incoming references, their original
+Journal day and ancestor bullets appear below the outline. A reference on an
+ancestor provides context to tagged descendants, so `#task` or `#decision` can
+be filtered without copying the reference into every bullet. The results keep
+the ordinary bullet presentation and open the original note when selected.
+Results from the same Journal day share one date heading, and common ancestor
+paths are merged into one editable outline instead of being repeated for every
+match. Tags present in those contextual scopes appear immediately as clickable
+badges with their occurrence counts; unrelated workspace tags are omitted.
+Virtual lists, mobile controls, and maintenance commands remain outside this
+slice.
 
 The bottom Vim status control is the single notification surface. It briefly
-expands for synchronization results, recovery operations, and useful errors,
+expands for manual synchronization results, recovery operations, and useful
+errors,
 then retracts to the current mode. `:sync` triggers an immediate
 synchronization; successful no-op background rounds remain silent.
 
-Zoom shows the current node as a restrained editable heading above its ordinary
-children. A compact, horizontally scrollable breadcrumb keeps the root and
-ancestors available for navigation, stopping at the parent so it never repeats
-the current heading.
+Zoom shows the current node as a restrained heading above its ordinary
+children. Protected Journal headings never become editors. A compact,
+horizontally scrollable breadcrumb keeps ancestors available for navigation,
+stopping at the parent so it never repeats the current heading.
 
 Native `View` menu items control webview display zoom. `File > Open
 Workspace…` and `:workspace` open the same small folder chooser. Selecting an
@@ -257,14 +291,16 @@ diagnostics to standard error. Its exit codes are:
 
 A Vrac workspace is an ordinary SQLite file. The current pre-production format
 uses `PRAGMA application_id = 0x56524143` (`VRAC` in ASCII) and
-`PRAGMA user_version = 1`. The engine validates both the marker and the exact
+`PRAGMA user_version = 2`. The engine validates both the marker and the exact
 schema before accepting an existing file. Valid unmarked current databases are
 marked only after validation.
 
 Nodes may carry multiple canonical tags outside their text and stable inline
 references whose displayed target text follows target renames. Root-level
 nodes remain children of a virtual, unstored product root. The public engine
-also provides a root-to-node path read for focused navigation.
+also provides a root-to-node path read for focused navigation. One internal
+system key protects the visible Journal container and its ISO calendar-day
+nodes; days remain ordinary reference targets and carry the `journal` tag.
 
 File-backed workspaces use foreign-key enforcement, WAL journaling, and
 `synchronous = FULL`. The current canonical schema is

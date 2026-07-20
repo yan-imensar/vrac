@@ -2,7 +2,7 @@ use std::error::Error as StdError;
 use std::io::{Error as IoError, ErrorKind};
 use std::path::PathBuf;
 
-use vrac::{Engine, Page};
+use vrac::{Engine, Page, SystemNode};
 
 const ITERATIONS: usize = 1_000;
 const PAGE_SIZE: usize = 100;
@@ -34,12 +34,18 @@ fn main() -> Result<(), Box<dyn StdError>> {
         .next()
         .ok_or_else(|| input_error("the workspace does not contain the deep path probe"))?
         .id;
+    let journal_day = engine
+        .search("2030 01 01", SEARCH_LIMIT)?
+        .into_iter()
+        .find(|node| matches!(node.system, Some(SystemNode::JournalDay { .. })))
+        .ok_or_else(|| input_error("the workspace does not contain the journal probe"))?
+        .id;
 
-    exercise_interactive_reads(&engine, metadata_parent, deep_leaf)?;
+    exercise_interactive_reads(&engine, metadata_parent, deep_leaf, journal_day)?;
     let peak_after_warmup = peak_resident_bytes()?;
 
     for _ in 0..ITERATIONS {
-        exercise_interactive_reads(&engine, metadata_parent, deep_leaf)?;
+        exercise_interactive_reads(&engine, metadata_parent, deep_leaf, journal_day)?;
     }
 
     let peak_after = peak_resident_bytes()?;
@@ -72,6 +78,7 @@ fn exercise_interactive_reads(
     engine: &Engine,
     metadata_parent: vrac::NodeId,
     deep_leaf: vrac::NodeId,
+    journal_day: vrac::NodeId,
 ) -> vrac::Result<()> {
     std::hint::black_box(engine.children(
         None,
@@ -89,7 +96,25 @@ fn exercise_interactive_reads(
     )?);
     std::hint::black_box(engine.search("decision 42", SEARCH_LIMIT)?);
     std::hint::black_box(engine.tags("dec", SEARCH_LIMIT)?);
+    std::hint::black_box(engine.backlinks(
+        metadata_parent,
+        None,
+        Page {
+            limit: PAGE_SIZE,
+            after: None,
+        },
+    )?);
+    std::hint::black_box(engine.backlinks(
+        metadata_parent,
+        Some("decision"),
+        Page {
+            limit: PAGE_SIZE,
+            after: None,
+        },
+    )?);
+    std::hint::black_box(engine.backlink_tags(metadata_parent, PAGE_SIZE)?);
     std::hint::black_box(engine.path(deep_leaf)?);
+    std::hint::black_box(engine.node(journal_day)?);
     Ok(())
 }
 

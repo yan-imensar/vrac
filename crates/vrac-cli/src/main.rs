@@ -313,6 +313,10 @@ fn command_check(arguments: &[String]) -> Result<ExitCode, CliError> {
             } => {
                 println!("invalid-reference\t{source_id}\t{start}\t{end}");
             }
+            CheckIssue::InvalidSystemNode { node_id } => {
+                println!("invalid-system-node\t{node_id}");
+            }
+            CheckIssue::MissingJournal => println!("missing-journal"),
             CheckIssue::InvalidSyncState(reason) => {
                 println!("invalid-sync-state\t{}", escape_text(&reason));
             }

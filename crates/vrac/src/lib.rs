@@ -22,9 +22,12 @@
 
 #![deny(missing_docs)]
 
+mod backlinks;
 mod checkpoint;
 mod content;
 mod db;
+mod history;
+mod journal;
 mod nodes;
 mod order;
 mod schema;
@@ -250,10 +253,24 @@ pub struct Node {
     pub has_children: bool,
     /// Plain text stored by the node.
     pub text: String,
+    /// Product-owned structural identity, when this is a protected system node.
+    pub system: Option<SystemNode>,
     /// Canonical tags in deterministic lexical order.
     pub tags: Vec<String>,
     /// Inline references ordered by their label range.
     pub references: Vec<NodeReference>,
+}
+
+/// Product-owned structural identity attached to a protected node.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SystemNode {
+    /// Visible container of every journal day.
+    Journal,
+    /// One local calendar day in the journal.
+    JournalDay {
+        /// Canonical ISO calendar date (`YYYY-MM-DD`).
+        date: String,
+    },
 }
 
 /// One resolved inline reference returned with a node.
@@ -422,6 +439,31 @@ pub struct NodePage {
     pub next: Option<Cursor>,
 }
 
+/// One backlink together with the ancestors that give it meaning.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BacklinkContext {
+    /// Path from the root to the matching node, inclusive.
+    pub path: Vec<Node>,
+}
+
+/// One deterministic page of contextual backlinks.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BacklinkPage {
+    /// Matching nodes with their complete ancestor paths.
+    pub contexts: Vec<BacklinkContext>,
+    /// Continuation for the next page, or `None` at the end.
+    pub next: Option<Cursor>,
+}
+
+/// One tag found inside the contextual scope of a backlink target.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BacklinkTag {
+    /// Canonical tag value without the visual `#` marker.
+    pub tag: String,
+    /// Number of distinct matching nodes in the contextual scope.
+    pub count: u64,
+}
+
 /// Shape used when generating performance and test data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GenerateShape {
@@ -483,6 +525,13 @@ pub enum CheckIssue {
         /// Stored exclusive end byte.
         end: i64,
     },
+    /// A protected Journal node no longer matches its structural identity.
+    InvalidSystemNode {
+        /// Invalid protected node.
+        node_id: NodeId,
+    },
+    /// The required Journal container is missing.
+    MissingJournal,
     /// Synchronization metadata or pending changes are inconsistent.
     InvalidSyncState(String),
     /// Marker indicating that additional issues were not included in the report.
@@ -541,6 +590,10 @@ pub enum Error {
     NodeHasReferences(NodeId),
     /// A node in the requested subtree is referenced from outside it.
     NodeReferenced(NodeId),
+    /// A product-owned structural node cannot be edited, moved, or removed.
+    SystemNodeProtected(NodeId),
+    /// A journal day is not a real ISO calendar date.
+    InvalidJournalDate(String),
     /// The checkpoint destination already exists and was not modified.
     CheckpointDestinationExists,
     /// A generated checkpoint failed its complete integrity validation.
@@ -589,6 +642,8 @@ pub enum Error {
         /// Last transaction in the conflicting package.
         last_sequence: u64,
     },
+    /// Undo or redo no longer matches the current workspace state.
+    HistoryConflict,
     /// Secure random bytes could not be obtained.
     Randomness(String),
     /// A filesystem operation outside SQLite failed.
@@ -653,6 +708,12 @@ impl fmt::Display for Error {
                     "node {id} is referenced from outside its subtree"
                 )
             }
+            Self::SystemNodeProtected(id) => {
+                write!(formatter, "system node is protected: {id}")
+            }
+            Self::InvalidJournalDate(date) => {
+                write!(formatter, "invalid journal date: {date:?}")
+            }
             Self::CheckpointDestinationExists => {
                 formatter.write_str("checkpoint destination already exists")
             }
@@ -704,6 +765,9 @@ impl fmt::Display for Error {
                 formatter,
                 "synchronization conflict with {device_id} package {first_sequence}..={last_sequence}"
             ),
+            Self::HistoryConflict => {
+                formatter.write_str("undo history no longer matches the workspace state")
+            }
             Self::Randomness(reason) => write!(formatter, "secure randomness failed: {reason}"),
             Self::Io(error) => write!(formatter, "I/O error: {error}"),
         }

@@ -9,7 +9,7 @@ A workspace is an ordinary SQLite database with:
 
 ```sql
 PRAGMA application_id = 0x56524143; -- `VRAC`
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 ```
 
 [`crates/vrac/schema.sql`](crates/vrac/schema.sql) is the executable schema.
@@ -21,7 +21,7 @@ after that validation succeeds.
 
 The canonical product tables are:
 
-- `nodes(id, parent_id, position, text)`;
+- `nodes(id, parent_id, position, text, system_key)`;
 - `node_tags(node_id, tag)`;
 - `node_references(source_id, start_byte, end_byte, target_id)`.
 
@@ -31,6 +31,13 @@ ordered deterministically by `(position, id)`, while numeric positions remain
 private storage details. Normal node reads also return whether a node currently
 has children. This value is derived through the parent index and is not stored
 or synchronized.
+
+`system_key` is normally `NULL`. The engine owns the two Journal forms:
+`journal` identifies the visible root-level Journal container and
+`journal-day:YYYY-MM-DD` identifies one protected calendar day below it. Their
+text, placement, and deletion are protected while their children remain normal
+editable nodes. Journal days carry the canonical `journal` tag. Clients cannot
+assign a system key or remove that required tag.
 
 Tags are unordered properties stored without a visual `#`. The engine trims
 them, converts them to Unicode lowercase, rejects empty values, whitespace and
@@ -42,6 +49,14 @@ source. Multiple references, self-references, and reference cycles are valid.
 Reads resolve the target's current plain text without recursively resolving
 references in that text. Deleting a source cascades its properties; deleting a
 target referenced from outside the deleted subtree is rejected atomically.
+
+Contextual backlinks are a derived read over these canonical relations. A
+direct reference defines a downward scope; an optional canonical tag selects
+matching nodes in that scope. Results include their ancestor path and use
+cursor pagination. Tag facets count distinct nodes in the same scope and never
+include tags elsewhere in the workspace. The scope, paths, counts, and ordering
+are not stored or synchronized, so this behavior adds no workspace-format
+object and does not change `user_version`.
 
 ## Synchronization state
 
@@ -61,6 +76,8 @@ sequence atomically. These rows are a bounded delivery queue, not permanent
 history.
 
 Only `nodes`, `node_tags`, and `node_references` are exchanged in changesets.
+The system key is part of its canonical node row and therefore keeps Journal
+identity stable across devices.
 Independent changes merge. A row conflict, tree cycle, invalid reference, or
 other integrity failure aborts the complete incoming package. A missing causal
 dependency is reported separately so the caller can apply other packages and

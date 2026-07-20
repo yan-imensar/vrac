@@ -71,7 +71,7 @@ fn the_cli_initializes_edits_moves_and_checks_a_workspace() {
 
     let check = vrac(&["check", database]);
     assert!(check.status.success());
-    assert_eq!(String::from_utf8_lossy(&check.stdout), "ok\t2 nodes\n");
+    assert_eq!(String::from_utf8_lossy(&check.stdout), "ok\t3 nodes\n");
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn children_can_stream_every_page_without_exposing_cursors() {
 
     let all = vrac(&["children", database, "--all"]);
     assert!(all.status.success());
-    assert_eq!(all.stdout.split(|byte| *byte == b'\n').count(), 1002);
+    assert_eq!(all.stdout.split(|byte| *byte == b'\n').count(), 1003);
     assert!(all.stderr.is_empty());
 
     let conflicting = vrac(&["children", database, "--all", "--limit", "10"]);
@@ -155,7 +155,8 @@ fn the_cli_accepts_relative_placement_and_rejects_conflicting_options() {
 
     let roots = vrac(&["children", database]);
     assert!(roots.status.success());
-    assert!(String::from_utf8_lossy(&roots.stdout).starts_with(&first_id));
+    let roots = String::from_utf8_lossy(&roots.stdout);
+    assert!(roots.find(&first_id) < roots.find(&last_id));
 
     let conflicting = vrac(&["add", database, "--first", "--last", "invalid"]);
     assert_eq!(conflicting.status.code(), Some(2));

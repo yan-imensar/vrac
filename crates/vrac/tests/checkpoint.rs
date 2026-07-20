@@ -44,7 +44,7 @@ fn a_checkpoint_is_an_independent_valid_snapshot_of_an_open_workspace() {
     assert!(checkpoint.node(later.id).unwrap().is_none());
     let report = checkpoint.check().expect("check checkpoint");
     assert!(report.is_ok());
-    assert_eq!(report.node_count, 2);
+    assert_eq!(report.node_count, 3);
 }
 
 #[test]
@@ -136,6 +136,7 @@ fn restoring_a_checkpoint_is_atomic_and_keeps_the_replaced_state_recoverable() {
 
     assert!(engine.node(later.id).unwrap().is_none());
     assert!(engine.node(original.id).unwrap().unwrap().tags.is_empty());
+    assert!(!engine.undo().expect("restore cleared session history"));
     assert!(engine.has_pending_sync_changes().unwrap());
     let recovery = Engine::open(&recovery_path).expect("open recovery checkpoint");
     assert_eq!(
@@ -183,5 +184,5 @@ fn an_active_workspace_cannot_be_used_as_its_own_restore_source() {
         Err(Error::RestoreSourceIsActiveWorkspace)
     ));
     assert!(!recovery_path.exists());
-    assert_eq!(source.check().unwrap().node_count, 1);
+    assert_eq!(source.check().unwrap().node_count, 2);
 }

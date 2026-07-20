@@ -49,6 +49,9 @@ fn children(engine: &Engine, parent_id: Option<NodeId>) -> Vec<Node> {
         .children(parent_id, Page::default())
         .expect("read children")
         .nodes
+        .into_iter()
+        .filter(|node| node.system.is_none())
+        .collect()
 }
 
 #[test]
@@ -106,7 +109,7 @@ fn new_databases_have_stable_format_markers_and_wal() {
         .expect("read journal mode");
 
     assert_eq!(application_id, VRAC_APPLICATION_ID);
-    assert_eq!(schema_version, 1);
+    assert_eq!(schema_version, 2);
     assert_eq!(journal_mode, "wal");
 }
 
@@ -252,6 +255,7 @@ fn relative_placement_and_cursor_pagination_preserve_exact_order() {
         .into_iter()
         .chain(second_page.nodes)
         .chain(third_page.nodes)
+        .filter(|node| node.system.is_none())
         .collect();
     assert_eq!(actual, expected);
 }
@@ -347,7 +351,7 @@ fn placement_references_must_exist_in_the_destination_sibling_list() {
         }),
         Err(Error::NodeNotFound(id)) if id == absent
     ));
-    assert_eq!(engine.check().expect("check database").node_count, 2);
+    assert_eq!(engine.check().expect("check database").node_count, 3);
 }
 
 #[test]
@@ -378,7 +382,7 @@ fn invalid_parents_and_page_limits_are_rejected() {
         engine.children(Some(absent), Page::default()),
         Err(Error::ParentNotFound(id)) if id == absent
     ));
-    assert_eq!(engine.check().expect("check database").node_count, 0);
+    assert_eq!(engine.check().expect("check database").node_count, 1);
 }
 
 #[test]
@@ -521,7 +525,7 @@ fn a_generation_error_rolls_back_every_insert_in_its_transaction() {
 
     let report = engine.check().expect("check database");
     assert!(report.is_ok());
-    assert_eq!(report.node_count, 1);
+    assert_eq!(report.node_count, 2);
 }
 
 #[test]
@@ -544,7 +548,7 @@ fn check_detects_a_cycle_inserted_outside_the_engine() {
 
     let mut engine = Engine::open(database.path()).expect("reopen database");
     let report = engine.check().expect("check database");
-    assert_eq!(report.node_count, 3);
+    assert_eq!(report.node_count, 4);
     assert!(matches!(
         report.issues.as_slice(),
         [CheckIssue::UnreachableNodes(2)]
@@ -582,7 +586,7 @@ fn generators_create_valid_wide_deep_and_mixed_trees() {
         engine.generate_nodes(111, shape).expect("generate nodes");
         let report = engine.check().expect("check generated tree");
         assert!(report.is_ok(), "invalid {shape:?} tree: {report:?}");
-        assert_eq!(report.node_count, 111);
+        assert_eq!(report.node_count, 112);
     }
 }
 

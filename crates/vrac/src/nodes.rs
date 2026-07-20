@@ -6,6 +6,7 @@ use crate::content::{
     canonicalize_tags, hydrate_nodes, replace_references, replace_tags, validate_references,
 };
 use crate::db::Engine;
+use crate::journal::{decode_system_key, journal_container, protected_node};
 use crate::order::{POSITION_STEP, position_at, position_for_placement};
 use crate::sync::{capture_session, commit_mutation};
 use crate::{
@@ -13,7 +14,7 @@ use crate::{
     NodeId, NodePage, Page, Placement, Result,
 };
 
-type RawNode = (Vec<u8>, Option<Vec<u8>>, i64, String);
+pub(crate) type RawNode = (Vec<u8>, Option<Vec<u8>>, i64, String, Option<String>);
 
 struct StoredNode {
     node: Node,
@@ -35,9 +36,14 @@ impl Engine {
         } = input;
         let tags = canonicalize_tags(tags)?;
 
-        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
         ensure_parent_exists(&transaction, parent_id)?;
+        if let Some(parent_id) = parent_id
+            && journal_container(&transaction, parent_id)?
+        {
+            return Err(Error::SystemNodeProtected(parent_id));
+        }
 
         let position = position_for_placement(&transaction, parent_id, placement, None)?;
         let id = random_node_id(&transaction)?;
@@ -50,7 +56,8 @@ impl Engine {
         let references = validate_references(&transaction, &text, references)?;
         replace_tags(&transaction, id, &tags)?;
         replace_references(&transaction, id, &references)?;
-        commit_mutation(transaction, captured, self.sync_device_id)?;
+        let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
+        self.history.record(changeset);
 
         self.node(id)?
             .ok_or_else(|| Error::InvalidDatabase("a newly created node could not be read".into()))
@@ -80,10 +87,12 @@ impl Engine {
     /// engine.create_node(CreateNode::new("First"))?;
     /// engine.create_node(CreateNode::new("Second"))?;
     ///
-    /// let first = engine.children(None, Page { limit: 1, after: None })?;
-    /// let second = engine.children(None, Page { limit: 1, after: first.next })?;
-    /// assert_eq!(first.nodes[0].text, "First");
-    /// assert_eq!(second.nodes[0].text, "Second");
+    /// let first = engine.children(None, Page { limit: 2, after: None })?;
+    /// let second = engine.children(None, Page { limit: 2, after: first.next })?;
+    /// let first = first.nodes.into_iter().find(|node| node.system.is_none()).unwrap();
+    /// let second = second.nodes.into_iter().find(|node| node.system.is_none()).unwrap();
+    /// assert_eq!(first.text, "First");
+    /// assert_eq!(second.text, "Second");
     /// # Ok::<(), vrac::Error>(())
     /// ```
     pub fn children(&self, parent_id: Option<NodeId>, page: Page) -> Result<NodePage> {
@@ -100,7 +109,7 @@ impl Engine {
         match page.after {
             Some(Cursor { position, id }) => {
                 let mut statement = self.connection.prepare_cached(
-                    "SELECT id, parent_id, position, text
+                    "SELECT id, parent_id, position, text, system_key
                      FROM nodes
                      WHERE parent_id IS ?1 AND (position, id) > (?2, ?3)
                      ORDER BY position, id
@@ -118,7 +127,7 @@ impl Engine {
             }
             None => {
                 let mut statement = self.connection.prepare_cached(
-                    "SELECT id, parent_id, position, text
+                    "SELECT id, parent_id, position, text, system_key
                      FROM nodes
                      WHERE parent_id IS ?1
                      ORDER BY position, id
@@ -155,14 +164,14 @@ impl Engine {
     /// node's depth and never traverses descendants.
     pub fn path(&self, id: NodeId) -> Result<Vec<Node>> {
         let mut statement = self.connection.prepare(
-            "WITH RECURSIVE ancestors(id, parent_id, position, text) AS (
-                 SELECT id, parent_id, position, text FROM nodes WHERE id = ?1
+            "WITH RECURSIVE ancestors(id, parent_id, position, text, system_key) AS (
+                 SELECT id, parent_id, position, text, system_key FROM nodes WHERE id = ?1
                  UNION
-                 SELECT nodes.id, nodes.parent_id, nodes.position, nodes.text
+                 SELECT nodes.id, nodes.parent_id, nodes.position, nodes.text, nodes.system_key
                  FROM nodes
                  JOIN ancestors ON nodes.id = ancestors.parent_id
              )
-             SELECT id, parent_id, position, text FROM ancestors",
+             SELECT id, parent_id, position, text, system_key FROM ancestors",
         )?;
         let rows = statement.query_map(params![node_id_bytes(&id)], raw_node)?;
         let stored: Vec<StoredNode> = rows
@@ -202,8 +211,11 @@ impl Engine {
 
     /// Replaces a node's text atomically.
     pub fn set_text(&mut self, id: NodeId, text: String) -> Result<()> {
-        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
+        if protected_node(&transaction, id)? {
+            return Err(Error::SystemNodeProtected(id));
+        }
         let has_references: bool = transaction.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM node_references WHERE source_id = ?1
@@ -215,13 +227,14 @@ impl Engine {
             return Err(Error::NodeHasReferences(id));
         }
         let changed = transaction.execute(
-            "UPDATE nodes SET text = ?1 WHERE id = ?2",
+            "UPDATE nodes SET text = ?1 WHERE id = ?2 AND text <> ?1",
             params![text, node_id_bytes(&id)],
         )?;
-        if changed == 0 {
+        if changed == 0 && !node_exists(&transaction, id)? {
             return Err(Error::NodeNotFound(id));
         }
-        commit_mutation(transaction, captured, self.sync_device_id)?;
+        let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
+        self.history.record(changeset);
         Ok(())
     }
 
@@ -230,10 +243,18 @@ impl Engine {
     /// Descendants are not rewritten. The engine validates the destination,
     /// rejects cycles, and preserves deterministic sibling order.
     pub fn move_node(&mut self, id: NodeId, destination: Destination) -> Result<()> {
-        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
         let moved = stored_node(&transaction, id)?.ok_or(Error::NodeNotFound(id))?;
+        if moved.node.system.is_some() {
+            return Err(Error::SystemNodeProtected(id));
+        }
         ensure_parent_exists(&transaction, destination.parent_id)?;
+        if let Some(parent_id) = destination.parent_id
+            && journal_container(&transaction, parent_id)?
+        {
+            return Err(Error::SystemNodeProtected(parent_id));
+        }
         ensure_move_is_acyclic(&transaction, id, destination.parent_id)?;
 
         let references_itself = match destination.placement {
@@ -247,7 +268,8 @@ impl Engine {
                     parent_id: destination.parent_id,
                 });
             }
-            commit_mutation(transaction, captured, self.sync_device_id)?;
+            let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
+            self.history.record(changeset);
             return Ok(());
         }
 
@@ -263,7 +285,8 @@ impl Engine {
             "UPDATE nodes SET parent_id = ?1, position = ?2 WHERE id = ?3",
             params![parent_bytes, position, node_id_bytes(&id)],
         )?;
-        commit_mutation(transaction, captured, self.sync_device_id)?;
+        let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
+        self.history.record(changeset);
         Ok(())
     }
 
@@ -273,10 +296,13 @@ impl Engine {
     /// a node outside it. References contained inside the subtree disappear
     /// with their source nodes.
     pub fn delete_node(&mut self, id: NodeId) -> Result<u64> {
-        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
         if !node_exists(&transaction, id)? {
             return Err(Error::NodeNotFound(id));
+        }
+        if protected_node(&transaction, id)? {
+            return Err(Error::SystemNodeProtected(id));
         }
 
         let external_target = transaction
@@ -321,7 +347,8 @@ impl Engine {
              DELETE FROM nodes WHERE id IN (SELECT id FROM subtree)",
             params![node_id_bytes(&id)],
         )?;
-        commit_mutation(transaction, captured, self.sync_device_id)?;
+        let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
+        self.history.record(changeset);
         u64::try_from(count)
             .map_err(|_| Error::InvalidDatabase("SQLite returned a negative delete count".into()))
     }
@@ -340,7 +367,7 @@ impl Engine {
             maximum: MAX_PAGE_SIZE,
         })?;
         let mut statement = self.connection.prepare_cached(
-            "SELECT nodes.id, nodes.parent_id, nodes.position, nodes.text
+            "SELECT nodes.id, nodes.parent_id, nodes.position, nodes.text, nodes.system_key
              FROM node_search
              JOIN nodes ON nodes.rowid = node_search.rowid
              WHERE node_search MATCH ?1
@@ -424,20 +451,32 @@ impl Engine {
     }
 }
 
-fn raw_node(row: &Row<'_>) -> rusqlite::Result<RawNode> {
-    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+pub(crate) fn raw_node(row: &Row<'_>) -> rusqlite::Result<RawNode> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
 }
 
-fn decode_stored_node((id, parent_id, position, text): RawNode) -> Result<StoredNode> {
+pub(crate) fn decode_node((id, parent_id, _position, text, system_key): RawNode) -> Result<Node> {
+    Ok(Node {
+        id: decode_id(id)?,
+        parent_id: parent_id.map(decode_id).transpose()?,
+        has_children: false,
+        text,
+        system: decode_system_key(system_key)?,
+        tags: Vec::new(),
+        references: Vec::new(),
+    })
+}
+
+fn decode_stored_node(raw: RawNode) -> Result<StoredNode> {
+    let position = raw.2;
     Ok(StoredNode {
-        node: Node {
-            id: decode_id(id)?,
-            parent_id: parent_id.map(decode_id).transpose()?,
-            has_children: false,
-            text,
-            tags: Vec::new(),
-            references: Vec::new(),
-        },
+        node: decode_node(raw)?,
         position,
     })
 }
@@ -452,7 +491,7 @@ pub(crate) fn decode_id(bytes: Vec<u8>) -> Result<NodeId> {
     Ok(NodeId::from_bytes(bytes))
 }
 
-fn random_node_id(connection: &Connection) -> Result<NodeId> {
+pub(crate) fn random_node_id(connection: &Connection) -> Result<NodeId> {
     let bytes: Vec<u8> = connection.query_row("SELECT randomblob(16)", [], |row| row.get(0))?;
     decode_id(bytes)
 }
@@ -476,7 +515,7 @@ pub(crate) fn node_exists(connection: &Connection, id: NodeId) -> Result<bool> {
 fn stored_node(connection: &Connection, id: NodeId) -> Result<Option<StoredNode>> {
     let raw = connection
         .query_row(
-            "SELECT id, parent_id, position, text FROM nodes WHERE id = ?1",
+            "SELECT id, parent_id, position, text, system_key FROM nodes WHERE id = ?1",
             params![node_id_bytes(&id)],
             raw_node,
         )

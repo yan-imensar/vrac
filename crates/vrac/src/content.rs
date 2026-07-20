@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use rusqlite::{Connection, params, params_from_iter};
 
 use crate::db::Engine;
+use crate::journal::{decode_system_key, protected_node};
 use crate::nodes::{decode_id, node_exists, node_id_bytes};
 use crate::sync::{capture_session, commit_mutation};
 use crate::{
@@ -41,18 +42,19 @@ impl Engine {
         text: String,
         references: Vec<ReferenceInput>,
     ) -> Result<()> {
-        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
-        if !node_exists(&transaction, id)? {
-            return Err(Error::NodeNotFound(id));
+        if protected_node(&transaction, id)? {
+            return Err(Error::SystemNodeProtected(id));
         }
         let references = validate_references(&transaction, &text, references)?;
         transaction.execute(
-            "UPDATE nodes SET text = ?1 WHERE id = ?2",
+            "UPDATE nodes SET text = ?1 WHERE id = ?2 AND text <> ?1",
             params![&text, node_id_bytes(&id)],
         )?;
         replace_references(&transaction, id, &references)?;
-        commit_mutation(transaction, captured, self.sync_device_id)?;
+        let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
+        self.history.record(changeset);
         Ok(())
     }
 
@@ -62,13 +64,26 @@ impl Engine {
     /// deduplicated. Empty tags, whitespace, and `#` are rejected.
     pub fn set_tags(&mut self, id: NodeId, tags: Vec<String>) -> Result<()> {
         let tags = canonicalize_tags(tags)?;
-        let captured = capture_session(&self.connection, self.sync_device_id)?;
+        let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
         if !node_exists(&transaction, id)? {
             return Err(Error::NodeNotFound(id));
         }
+        let system_key: Option<String> = transaction.query_row(
+            "SELECT system_key FROM nodes WHERE id = ?1",
+            params![node_id_bytes(&id)],
+            |row| row.get(0),
+        )?;
+        if matches!(
+            decode_system_key(system_key)?,
+            Some(crate::SystemNode::JournalDay { .. })
+        ) && !tags.iter().any(|tag| tag == "journal")
+        {
+            return Err(Error::SystemNodeProtected(id));
+        }
         replace_tags(&transaction, id, &tags)?;
-        commit_mutation(transaction, captured, self.sync_device_id)?;
+        let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
+        self.history.record(changeset);
         Ok(())
     }
 
@@ -135,7 +150,7 @@ pub(crate) fn canonicalize_tags(tags: Vec<String>) -> Result<Vec<String>> {
     Ok(canonical)
 }
 
-fn canonicalize_tag(original: &str) -> Result<String> {
+pub(crate) fn canonicalize_tag(original: &str) -> Result<String> {
     let tag: String = original
         .trim()
         .chars()

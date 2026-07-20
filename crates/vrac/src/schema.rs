@@ -3,7 +3,7 @@ use rusqlite::Connection;
 use crate::{Error, Result};
 
 pub(crate) const APPLICATION_ID: i64 = 0x5652_4143;
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 1;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_SQL: &str = include_str!("../schema.sql");
 
@@ -139,6 +139,7 @@ fn create_database(connection: &mut Connection) -> Result<()> {
         "INSERT INTO workspace (singleton, workspace_id) VALUES (1, randomblob(16))",
         [],
     )?;
+    crate::journal::create_journal(&transaction)?;
     transaction.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
     transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
     validate_schema(

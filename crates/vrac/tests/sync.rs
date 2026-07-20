@@ -6,11 +6,39 @@ use rusqlite::{Connection, params};
 use tempfile::tempdir;
 use vrac::{
     CheckIssue, CreateNode, Destination, Engine, Error, Placement, ReferenceInput, SyncApply,
-    SyncDeviceId,
+    SyncDeviceId, SystemNode,
 };
 
 fn device(byte: u8) -> SyncDeviceId {
     SyncDeviceId::from_bytes([byte; 16])
+}
+
+#[test]
+fn journal_days_keep_their_identity_and_tag_across_devices() {
+    let directory = tempdir().expect("create temporary directory");
+    let first_path = directory.path().join("first.vrac");
+    let second_path = directory.path().join("second.vrac");
+    let mut first = Engine::open_synced(&first_path, device(1)).unwrap();
+    first.checkpoint(&second_path).unwrap();
+    let mut second = Engine::open_synced(&second_path, device(2)).unwrap();
+
+    let day = first.journal_day("2026-07-19").unwrap();
+    let package = flush(&mut first);
+    assert_eq!(
+        second.apply_sync_package(&package).unwrap(),
+        SyncApply::Applied
+    );
+
+    let received = second.node(day.id).unwrap().unwrap();
+    assert_eq!(received.tags, ["journal"]);
+    assert_eq!(
+        received.system,
+        Some(SystemNode::JournalDay {
+            date: "2026-07-19".into()
+        })
+    );
+    assert_eq!(second.journal_day("2026-07-19").unwrap().id, day.id);
+    assert!(second.next_sync_package().unwrap().is_none());
 }
 
 fn flush(engine: &mut Engine) -> Vec<u8> {

@@ -5,7 +5,12 @@ CREATE TABLE nodes (
               CHECK (parent_id IS NULL OR
                      (typeof(parent_id) = 'blob' AND length(parent_id) = 16)),
     position  INTEGER NOT NULL,
-    text      TEXT NOT NULL
+    text      TEXT NOT NULL,
+    system_key TEXT UNIQUE
+               CHECK (system_key IS NULL OR
+                      system_key = 'journal' OR
+                      system_key GLOB
+                      'journal-day:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]')
 ) STRICT;
 
 CREATE INDEX nodes_by_parent

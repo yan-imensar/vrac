@@ -3,6 +3,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::content::check_content;
+use crate::history::History;
 use crate::schema::prepare_database;
 use crate::{CheckIssue, CheckReport, Error, Result, SyncDeviceId};
 
@@ -15,6 +16,7 @@ const MAX_REPORTED_ISSUES: usize = 100;
 pub struct Engine {
     pub(crate) connection: Connection,
     pub(crate) sync_device_id: Option<SyncDeviceId>,
+    pub(crate) history: History,
 }
 
 impl Engine {
@@ -58,6 +60,7 @@ impl Engine {
         Ok(Self {
             connection,
             sync_device_id,
+            history: History::default(),
         })
     }
 
@@ -98,7 +101,25 @@ impl Engine {
         drop(rows);
         drop(foreign_keys);
 
-        if issues.len() <= MAX_REPORTED_ISSUES {
+        if issues.len() <= MAX_REPORTED_ISSUES
+            && !issues
+                .iter()
+                .any(|issue| matches!(issue, CheckIssue::AdditionalIssuesOmitted))
+        {
+            let remaining = MAX_REPORTED_ISSUES.saturating_sub(issues.len());
+            let (system_issues, omitted) =
+                crate::journal::check_system_nodes(&self.connection, remaining)?;
+            issues.extend(system_issues);
+            if omitted {
+                issues.push(CheckIssue::AdditionalIssuesOmitted);
+            }
+        }
+
+        if issues.len() <= MAX_REPORTED_ISSUES
+            && !issues
+                .iter()
+                .any(|issue| matches!(issue, CheckIssue::AdditionalIssuesOmitted))
+        {
             let remaining = MAX_REPORTED_ISSUES.saturating_sub(issues.len());
             let (content_issues, omitted) = check_content(&self.connection, remaining)?;
             issues.extend(content_issues);

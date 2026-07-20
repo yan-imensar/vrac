@@ -229,30 +229,27 @@ fn record_sync_issue(
     }
 }
 
-pub(crate) fn capture_session(
-    connection: &Connection,
-    device_id: Option<SyncDeviceId>,
-) -> Result<Option<Session<'_>>> {
-    if device_id.is_none() {
-        return Ok(None);
-    }
+pub(crate) fn capture_session(connection: &Connection) -> Result<Session<'_>> {
     let mut session = Session::new(connection)?;
     for table in CAPTURED_TABLES {
         session.attach(Some(table))?;
     }
-    Ok(Some(session))
+    Ok(session)
 }
 
 pub(crate) fn commit_mutation(
     transaction: Transaction<'_>,
-    mut session: Option<Session<'_>>,
+    mut session: Session<'_>,
     device_id: Option<SyncDeviceId>,
-) -> Result<()> {
-    if let (Some(session), Some(device_id)) = (session.as_mut(), device_id)
-        && !session.is_empty()
-    {
+) -> Result<Option<Vec<u8>>> {
+    let changeset = if session.is_empty() {
+        None
+    } else {
         let mut changeset = Vec::new();
         session.changeset_strm(&mut changeset)?;
+        Some(changeset)
+    };
+    if let (Some(changeset), Some(device_id)) = (changeset.as_ref(), device_id) {
         let sequence: i64 = transaction.query_row(
             "UPDATE sync_devices
              SET next_sequence = next_sequence + 1
@@ -268,7 +265,7 @@ pub(crate) fn commit_mutation(
         )?;
     }
     transaction.commit()?;
-    Ok(())
+    Ok(changeset)
 }
 
 impl Engine {
@@ -459,10 +456,13 @@ impl Engine {
         let apply_error = Arc::new(AtomicU8::new(NO_APPLY_ERROR));
         let apply_error_seen = Arc::clone(&apply_error);
         let mut payload = package.payload;
-        let applied = transaction.apply_strm(
-            &mut payload,
-            None::<fn(&str) -> bool>,
-            move |kind, _item| {
+        let applied =
+            transaction.apply_strm(&mut payload, None::<fn(&str) -> bool>, move |kind, item| {
+                if kind == ConflictType::SQLITE_CHANGESET_NOTFOUND
+                    && item.op().is_ok_and(|operation| operation.indirect())
+                {
+                    return ConflictAction::SQLITE_CHANGESET_OMIT;
+                }
                 let classification = match kind {
                     ConflictType::SQLITE_CHANGESET_NOTFOUND
                     | ConflictType::SQLITE_CHANGESET_FOREIGN_KEY => MISSING_DEPENDENCY,
@@ -470,8 +470,7 @@ impl Engine {
                 };
                 apply_error_seen.store(classification, Ordering::Relaxed);
                 ConflictAction::SQLITE_CHANGESET_ABORT
-            },
-        );
+            });
         if let Err(error) = applied {
             let error = match apply_error.load(Ordering::Relaxed) {
                 MISSING_DEPENDENCY => Error::SyncDependencyMissing {
@@ -509,6 +508,7 @@ impl Engine {
             ],
         )?;
         transaction.commit()?;
+        self.history.clear();
         Ok(SyncApply::Applied)
     }
 }
@@ -540,7 +540,9 @@ fn touched_nodes(changeset: &[u8]) -> Result<TouchedNodes> {
             "node_references" => {
                 touched.references.insert(id);
             }
-            "node_tags" => {}
+            "node_tags" => {
+                touched.paths.insert(id);
+            }
             table => {
                 return Err(Error::InvalidSyncPackage(format!(
                     "changeset contains unexpected table {table:?}"
@@ -558,7 +560,29 @@ fn validate_merged_state(
     first_sequence: u64,
     last_sequence: u64,
 ) -> Result<()> {
+    let journal_valid: bool = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM nodes
+             WHERE system_key = 'journal' AND parent_id IS NULL AND text = 'Journal'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !journal_valid {
+        return Err(Error::SyncConflict {
+            device_id,
+            first_sequence,
+            last_sequence,
+        });
+    }
     for id in &touched.paths {
+        if !crate::journal::validate_system_node(connection, *id)? {
+            return Err(Error::SyncConflict {
+                device_id,
+                first_sequence,
+                last_sequence,
+            });
+        }
         let (exists, reaches_root): (bool, bool) = connection.query_row(
             "WITH RECURSIVE ancestors(id, parent_id) AS (
                  SELECT id, parent_id FROM nodes WHERE id = ?1

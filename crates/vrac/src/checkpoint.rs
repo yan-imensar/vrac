@@ -104,15 +104,15 @@ impl Engine {
         self.connection
             .execute("ATTACH DATABASE ?1 AS restore_source", [path])?;
         let restored = (|| {
-            let captured = capture_session(&self.connection, self.sync_device_id)?;
+            let captured = capture_session(&self.connection)?;
             let transaction = self.connection.unchecked_transaction()?;
             transaction.pragma_update(None, "defer_foreign_keys", true)?;
             transaction.execute("DELETE FROM node_references", [])?;
             transaction.execute("DELETE FROM node_tags", [])?;
             transaction.execute("DELETE FROM nodes", [])?;
             transaction.execute(
-                "INSERT INTO nodes (id, parent_id, position, text)
-                 SELECT id, parent_id, position, text FROM restore_source.nodes",
+                "INSERT INTO nodes (id, parent_id, position, text, system_key)
+                 SELECT id, parent_id, position, text, system_key FROM restore_source.nodes",
                 [],
             )?;
             transaction.execute(
@@ -126,12 +126,13 @@ impl Engine {
                  FROM restore_source.node_references",
                 [],
             )?;
-            commit_mutation(transaction, captured, self.sync_device_id)
+            commit_mutation(transaction, captured, self.sync_device_id).map(drop)
         })();
         let detached = self
             .connection
             .execute_batch("DETACH DATABASE restore_source");
         restored?;
+        self.history.clear();
         detached?;
         Ok(())
     }
@@ -178,5 +179,6 @@ fn checkpoint_engine(path: &Path) -> Result<Engine> {
     Ok(Engine {
         connection,
         sync_device_id: None,
+        history: Default::default(),
     })
 }

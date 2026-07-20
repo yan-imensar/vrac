@@ -2,7 +2,10 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
-use vrac::{CheckIssue, CreateNode, Engine, Error, Node, NodeId, Page, ReferenceInput};
+use vrac::{
+    CheckIssue, CreateNode, Destination, Engine, Error, Node, NodeId, Page, Placement,
+    ReferenceInput, SystemNode,
+};
 
 struct TestDatabase {
     _directory: TempDir,
@@ -37,6 +40,339 @@ fn create(engine: &mut Engine, text: &str) -> Node {
     engine
         .create_node(CreateNode::new(text))
         .expect("create node")
+}
+
+fn create_child(engine: &mut Engine, parent_id: NodeId, text: &str) -> Node {
+    let mut input = CreateNode::new(text);
+    input.parent_id = Some(parent_id);
+    engine.create_node(input).expect("create child")
+}
+
+fn create_referencing_child(
+    engine: &mut Engine,
+    parent_id: NodeId,
+    text: &str,
+    label: &str,
+    target_id: NodeId,
+) -> Node {
+    let mut input = CreateNode::new(text);
+    input.parent_id = Some(parent_id);
+    input.references = vec![reference(text, label, target_id)];
+    engine.create_node(input).expect("create reference")
+}
+
+#[test]
+fn journal_days_are_visible_tagged_protected_and_referenceable() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let roots = engine.children(None, Page::default()).expect("read roots");
+    let journal = roots
+        .nodes
+        .into_iter()
+        .find(|node| node.system == Some(SystemNode::Journal))
+        .expect("journal exists");
+    assert_eq!(journal.text, "Journal");
+
+    let day = engine.journal_day("2026-07-19").expect("create day");
+    assert_eq!(
+        day.system,
+        Some(SystemNode::JournalDay {
+            date: "2026-07-19".into()
+        })
+    );
+    assert_eq!(day.parent_id, Some(journal.id));
+    assert_eq!(day.tags, ["journal"]);
+    assert_eq!(engine.journal_day("2026-07-19").unwrap().id, day.id);
+
+    for result in [
+        engine.set_text(day.id, "Tomorrow".into()),
+        engine.set_content(day.id, "Tomorrow".into(), Vec::new()),
+        engine.move_node(
+            day.id,
+            Destination {
+                parent_id: None,
+                placement: Placement::Last,
+            },
+        ),
+        engine.delete_node(day.id).map(drop),
+    ] {
+        assert!(matches!(result, Err(Error::SystemNodeProtected(id)) if id == day.id));
+    }
+    assert!(matches!(
+        engine.set_tags(day.id, vec!["plan".into()]),
+        Err(Error::SystemNodeProtected(id)) if id == day.id
+    ));
+    engine
+        .set_tags(day.id, vec!["journal".into(), "plan".into()])
+        .expect("keep required tag");
+
+    let task_text = "Prepare release for [[2026-07-19]]";
+    let mut task = CreateNode::new(task_text);
+    task.references = vec![reference(task_text, "2026-07-19", day.id)];
+    let task = engine.create_node(task).expect("create planned task");
+    assert_eq!(task.references[0].target_id, day.id);
+    assert_eq!(task.references[0].target_text, "2026-07-19");
+
+    assert!(matches!(
+        engine.create_node(CreateNode {
+            parent_id: Some(journal.id),
+            ..CreateNode::new("Not a date")
+        }),
+        Err(Error::SystemNodeProtected(id)) if id == journal.id
+    ));
+    assert!(matches!(
+        engine.delete_node(journal.id),
+        Err(Error::SystemNodeProtected(id)) if id == journal.id
+    ));
+    assert!(engine.check().unwrap().is_ok());
+}
+
+#[test]
+fn backlinks_inherit_reference_context_downward_and_filter_by_tag() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let northstar = create(&mut engine, "Northstar");
+    let alex = create(&mut engine, "Alex");
+    let morgan = create(&mut engine, "Morgan");
+    let archive = create(&mut engine, "Archive");
+    let day = engine.journal_day("2026-07-20").expect("create day");
+
+    let meeting = create_referencing_child(
+        &mut engine,
+        day.id,
+        "project meeting [[Northstar]]",
+        "Northstar",
+        northstar.id,
+    );
+    let attendee = create_referencing_child(
+        &mut engine,
+        meeting.id,
+        "with [[Alex]]",
+        "Alex",
+        alex.id,
+    );
+    let _other_attendee = create_referencing_child(
+        &mut engine,
+        meeting.id,
+        "with [[Morgan]]",
+        "Morgan",
+        morgan.id,
+    );
+    let decision = create_child(&mut engine, meeting.id, "approve the release plan");
+    engine
+        .set_tags(decision.id, vec!["decision".into()])
+        .expect("tag decision");
+
+    let work = create_referencing_child(
+        &mut engine,
+        day.id,
+        "work on the next version of [[Archive]]",
+        "Archive",
+        archive.id,
+    );
+    let ux = create_child(&mut engine, work.id, "UX / UI");
+    let review = create_child(&mut engine, ux.id, "add an archive review screen");
+    engine
+        .set_tags(review.id, vec!["task".into()])
+        .expect("tag review task");
+    let engine_work = create_child(&mut engine, work.id, "Engine");
+    let sqlite = create_child(&mut engine, engine_work.id, "add a SQLite snapshot");
+    engine
+        .set_tags(sqlite.id, vec!["task".into()])
+        .expect("tag sqlite task");
+    let contact = create_referencing_child(
+        &mut engine,
+        engine_work.id,
+        "ask [[Morgan]] for a code review",
+        "Morgan",
+        morgan.id,
+    );
+    engine
+        .set_tags(contact.id, vec!["task".into()])
+        .expect("tag contact task");
+
+    let northstar_links = engine
+        .backlinks(northstar.id, None, Page::default())
+        .expect("read northstar backlinks");
+    assert_eq!(northstar_links.contexts.len(), 1);
+    assert_eq!(
+        northstar_links.contexts[0].path.last().unwrap().id,
+        meeting.id
+    );
+    assert!(
+        northstar_links.contexts[0]
+            .path
+            .iter()
+            .any(|node| node.id == day.id)
+    );
+
+    let decisions = engine
+        .backlinks(northstar.id, Some(" Decision "), Page::default())
+        .expect("filter northstar decisions");
+    assert_eq!(decisions.contexts.len(), 1);
+    assert_eq!(decisions.contexts[0].path.last().unwrap().id, decision.id);
+    assert!(
+        decisions.contexts[0]
+            .path
+            .iter()
+            .any(|node| node.id == meeting.id)
+    );
+
+    let alex_links = engine
+        .backlinks(alex.id, None, Page::default())
+        .expect("read alex backlinks");
+    assert_eq!(
+        alex_links.contexts[0].path.last().unwrap().id,
+        attendee.id
+    );
+    assert!(
+        alex_links.contexts[0]
+            .path
+            .iter()
+            .any(|node| node.id == meeting.id)
+    );
+
+    let archive_tasks = engine
+        .backlinks(archive.id, Some("task"), Page::default())
+        .expect("read archive tasks");
+    let archive_task_ids = archive_tasks
+        .contexts
+        .iter()
+        .map(|context| context.path.last().unwrap().id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(archive_task_ids, [review.id, sqlite.id, contact.id].into());
+    assert_eq!(
+        engine
+            .backlink_tags(archive.id, 20)
+            .expect("read archive tag facets"),
+        [vrac::BacklinkTag {
+            tag: "task".into(),
+            count: 3,
+        }]
+    );
+
+    let morgan_tasks = engine
+        .backlinks(morgan.id, Some("task"), Page::default())
+        .expect("read morgan tasks");
+    assert_eq!(morgan_tasks.contexts.len(), 1);
+    assert_eq!(
+        morgan_tasks.contexts[0].path.last().unwrap().id,
+        contact.id
+    );
+    assert!(
+        !morgan_tasks.contexts[0]
+            .path
+            .iter()
+            .any(|node| node.id == sqlite.id)
+    );
+    assert_eq!(
+        engine
+            .backlink_tags(morgan.id, 20)
+            .expect("read morgan tag facets"),
+        [vrac::BacklinkTag {
+            tag: "task".into(),
+            count: 1,
+        }]
+    );
+
+    let unrelated = create(&mut engine, "Unrelated");
+    engine
+        .set_tags(unrelated.id, vec!["elsewhere".into()])
+        .expect("tag unrelated node");
+    assert!(
+        engine
+            .backlink_tags(archive.id, 20)
+            .unwrap()
+            .iter()
+            .all(|facet| facet.tag != "elsewhere")
+    );
+}
+
+#[test]
+fn backlinks_are_cursor_paginated_without_duplicates_or_omissions() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let target = create(&mut engine, "Project");
+    let mut expected = std::collections::HashSet::new();
+    for date in ["2026-07-18", "2026-07-19", "2026-07-20"] {
+        let day = engine.journal_day(date).expect("create day");
+        let source = create_referencing_child(
+            &mut engine,
+            day.id,
+            "work on [[Project]]",
+            "Project",
+            target.id,
+        );
+        expected.insert(source.id);
+    }
+
+    let first = engine
+        .backlinks(
+            target.id,
+            None,
+            Page {
+                limit: 2,
+                after: None,
+            },
+        )
+        .expect("read first page");
+    assert_eq!(first.contexts.len(), 2);
+    assert_eq!(first.contexts[0].path[1].text, "2026-07-20");
+    let second = engine
+        .backlinks(
+            target.id,
+            None,
+            Page {
+                limit: 2,
+                after: first.next,
+            },
+        )
+        .expect("read second page");
+    assert_eq!(second.contexts.len(), 1);
+    assert!(second.next.is_none());
+
+    let actual = first
+        .contexts
+        .iter()
+        .chain(&second.contexts)
+        .map(|context| context.path.last().unwrap().id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn invalid_journal_dates_never_create_partial_nodes() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    for date in ["2026-2-03", "2026-02-29", "2024-02-30", "2026-13-01"] {
+        assert!(matches!(
+            engine.journal_day(date),
+            Err(Error::InvalidJournalDate(value)) if value == date
+        ));
+    }
+    assert_eq!(engine.check().unwrap().node_count, 1);
+}
+
+#[test]
+fn check_detects_a_broken_journal_day() {
+    let database = TestDatabase::new();
+    let mut engine = Engine::open(database.path()).expect("open database");
+    let day = engine.journal_day("2026-07-19").expect("create day");
+    drop(engine);
+
+    let connection = Connection::open(database.path()).expect("open raw database");
+    connection
+        .execute(
+            "DELETE FROM node_tags WHERE node_id = ?1 AND tag = 'journal'",
+            params![&day.id.as_bytes()[..]],
+        )
+        .expect("corrupt system tag");
+    drop(connection);
+
+    let engine = Engine::open(database.path()).expect("reopen database");
+    assert!(
+        engine
+            .check()
+            .unwrap()
+            .issues
+            .contains(&CheckIssue::InvalidSystemNode { node_id: day.id })
+    );
 }
 
 #[test]
@@ -331,7 +667,7 @@ fn invalid_reference_creation_rolls_back_the_node() {
         engine.create_node(input),
         Err(Error::ReferenceTargetNotFound(id)) if id == missing
     ));
-    assert_eq!(engine.check().expect("check rollback").node_count, 0);
+    assert_eq!(engine.check().expect("check rollback").node_count, 1);
 }
 
 #[test]
@@ -422,7 +758,16 @@ fn node_reads_include_current_child_presence() {
     let leaf = engine.create_node(leaf_input).expect("create leaf");
 
     assert!(engine.node(root.id).unwrap().unwrap().has_children);
-    assert!(engine.children(None, Page::default()).unwrap().nodes[0].has_children);
+    assert!(
+        engine
+            .children(None, Page::default())
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find(|node| node.id == root.id)
+            .unwrap()
+            .has_children
+    );
     assert!(engine.node(child.id).unwrap().unwrap().has_children);
     assert!(!engine.node(leaf.id).unwrap().unwrap().has_children);
     assert_eq!(
@@ -455,7 +800,7 @@ fn paginated_children_include_batched_properties() {
         .children(
             None,
             Page {
-                limit: 3,
+                limit: 4,
                 after: None,
             },
         )
@@ -464,12 +809,17 @@ fn paginated_children_include_batched_properties() {
         .children(
             None,
             Page {
-                limit: 3,
+                limit: 4,
                 after: first.next,
             },
         )
         .expect("read second page");
-    let nodes: Vec<_> = first.nodes.into_iter().chain(second.nodes).collect();
+    let nodes: Vec<_> = first
+        .nodes
+        .into_iter()
+        .chain(second.nodes)
+        .filter(|node| node.system.is_none())
+        .collect();
     assert_eq!(nodes.len(), 6);
     for node in nodes.into_iter().skip(1) {
         assert_eq!(node.tags.len(), 1);

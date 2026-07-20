@@ -43,6 +43,18 @@ fn main() -> Result<(), Box<dyn StdError>> {
     print_duration("reopen", started.elapsed());
 
     let started = Instant::now();
+    let journal_day = engine.journal_day("2030-01-01")?;
+    print_duration("create_journal_day", started.elapsed());
+    let journal_day_p95 = measure_p95(|| {
+        std::hint::black_box(engine.journal_day("2030-01-01")?);
+        Ok(())
+    })?;
+    record_interactive("journal_day_p95", journal_day_p95)?;
+    if journal_day.tags != ["journal"] {
+        return Err(IoError::other("the journal day is not tagged").into());
+    }
+
+    let started = Instant::now();
     let first_page = engine.children(
         None,
         Page {
@@ -214,6 +226,56 @@ fn main() -> Result<(), Box<dyn StdError>> {
         Ok(())
     })?;
     record_interactive("tag_completion_p95", tags_p95)?;
+
+    let backlinks_p95 = measure_p95(|| {
+        let page = engine.backlinks(
+            created.id,
+            None,
+            Page {
+                limit: METADATA_PAGE_SIZE,
+                after: None,
+            },
+        )?;
+        if page.contexts.len() != METADATA_PAGE_SIZE {
+            return Err(vrac::Error::InvalidDatabase(
+                "the contextual backlink page is incomplete".into(),
+            ));
+        }
+        Ok(())
+    })?;
+    record_interactive("backlinks_100_p95", backlinks_p95)?;
+
+    let tagged_backlinks_p95 = measure_p95(|| {
+        let page = engine.backlinks(
+            created.id,
+            Some("decision"),
+            Page {
+                limit: METADATA_PAGE_SIZE,
+                after: None,
+            },
+        )?;
+        if page.contexts.len() != METADATA_PAGE_SIZE {
+            return Err(vrac::Error::InvalidDatabase(
+                "the tagged contextual backlink page is incomplete".into(),
+            ));
+        }
+        Ok(())
+    })?;
+    record_interactive("tagged_backlinks_100_p95", tagged_backlinks_p95)?;
+
+    let backlink_tags_p95 = measure_p95(|| {
+        let tags = engine.backlink_tags(created.id, METADATA_PAGE_SIZE)?;
+        if tags
+            .first()
+            .is_none_or(|facet| facet.tag != "decision" || facet.count != 100)
+        {
+            return Err(vrac::Error::InvalidDatabase(
+                "the contextual backlink tag counts are incomplete".into(),
+            ));
+        }
+        Ok(())
+    })?;
+    record_interactive("backlink_tag_counts_p95", backlink_tags_p95)?;
 
     let mut deletion_nodes = Vec::with_capacity(SAMPLE_COUNT);
     for index in 0..SAMPLE_COUNT {
