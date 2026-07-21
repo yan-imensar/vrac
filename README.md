@@ -194,8 +194,9 @@ The token is temporary continuation state, not workspace data.
 
 The interface implements the dark outline surface, lazy branch expansion,
 text editing, focused zoom, bounded pagination, node search, deletion, and
-indentation. Every workspace opens on today's protected Journal node. Journal
-days are visible nodes tagged `journal`, so they can be referenced normally;
+indentation. Long text wraps in both display and editing while the bullet and
+disclosure remain aligned with the first line. Every workspace opens on today's
+protected Journal node. Journal days are visible nodes tagged `journal`, so they can be referenced normally;
 typing a missing ISO date such as `[[2026-07-22]]` creates that day below
 Journal. Root navigation is hidden by default and can be enabled for the
 current session with `:root on`, then hidden again with `:root off`. Typing
