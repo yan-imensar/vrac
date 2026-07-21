@@ -450,6 +450,7 @@ impl Engine {
 
         let touched = touched_nodes(package.payload)?;
         let transaction = self.connection.transaction()?;
+        transaction.pragma_update(None, "defer_foreign_keys", true)?;
         const NO_APPLY_ERROR: u8 = 0;
         const MISSING_DEPENDENCY: u8 = 1;
         const TRUE_CONFLICT: u8 = 2;

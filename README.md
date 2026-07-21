@@ -199,9 +199,14 @@ current session with `:root on`, then hidden again with `:root off`. Typing
 `[[` searches other reference targets and offers a new root node when no
 matching target exists. Typing `#` lists canonical tags and can apply a
 new one without storing the marker in node text. A central, optional Vim
-controller drives normal and insert modes; the bottom status control toggles it
-without changing engine behavior. `:` and `/` expand the same bottom area for
-commands and indexed node search. Session undo and redo are available through
+controller drives normal, insert, and node-wise visual modes; the bottom status
+control toggles it without changing engine behavior. `yy`, visual `y`, and
+`:copy` write complete selected subtrees to the system clipboard as portable
+indented text bullets. `p` and `:paste` read that same clipboard and recreate
+its hierarchy atomically, while `dd` copies successfully before deleting.
+The copied text remains directly usable in any other application. `:` and `/`
+expand the same bottom area for commands and indexed node search. Session undo
+and redo are available through
 `:undo` / `:redo`, Vim `u` / `Ctrl-R`, and the platform `Undo` / `Redo`
 shortcuts. When the current bullet has incoming references, their original
 Journal day and ancestor bullets appear below the outline. A reference on an

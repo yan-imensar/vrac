@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
 use vrac::{
-    CheckIssue, CreateNode, Destination, Engine, Error, Placement, ReferenceInput, SyncApply,
+    CheckIssue, CreateNode, Destination, Engine, Error, Page, Placement, ReferenceInput, SyncApply,
     SyncDeviceId, SystemNode,
 };
 
@@ -39,6 +39,44 @@ fn journal_days_keep_their_identity_and_tag_across_devices() {
     );
     assert_eq!(second.journal_day("2026-07-19").unwrap().id, day.id);
     assert!(second.next_sync_package().unwrap().is_none());
+}
+
+#[test]
+fn a_hierarchical_paste_synchronizes_as_one_atomic_mutation() {
+    let directory = tempdir().expect("create temporary directory");
+    let first_path = directory.path().join("first.vrac");
+    let second_path = directory.path().join("second.vrac");
+    let mut first = Engine::open_synced(&first_path, device(1)).unwrap();
+    first.checkpoint(&second_path).unwrap();
+    let mut second = Engine::open_synced(&second_path, device(2)).unwrap();
+
+    let pasted = first
+        .paste_nodes(
+            Destination {
+                parent_id: None,
+                placement: Placement::Last,
+            },
+            "- Project #active\n  - First\n  - Second",
+        )
+        .expect("paste outline");
+    let package = flush(&mut first);
+
+    assert_eq!(
+        second.apply_sync_package(&package).unwrap(),
+        SyncApply::Applied
+    );
+    let root = second.node(pasted[0].id).unwrap().unwrap();
+    assert_eq!(root.tags, ["active"]);
+    assert_eq!(
+        second
+            .children(Some(root.id), Page::default())
+            .unwrap()
+            .nodes
+            .iter()
+            .map(|node| node.text.as_str())
+            .collect::<Vec<_>>(),
+        ["First", "Second"]
+    );
 }
 
 fn flush(engine: &mut Engine) -> Vec<u8> {

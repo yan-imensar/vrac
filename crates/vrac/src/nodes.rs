@@ -523,7 +523,10 @@ fn stored_node(connection: &Connection, id: NodeId) -> Result<Option<StoredNode>
     raw.map(decode_stored_node).transpose()
 }
 
-fn ensure_parent_exists(connection: &Connection, parent_id: Option<NodeId>) -> Result<()> {
+pub(crate) fn ensure_parent_exists(
+    connection: &Connection,
+    parent_id: Option<NodeId>,
+) -> Result<()> {
     if let Some(parent_id) = parent_id
         && !node_exists(connection, parent_id)?
     {

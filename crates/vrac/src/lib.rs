@@ -24,6 +24,7 @@
 
 mod backlinks;
 mod checkpoint;
+mod clipboard;
 mod content;
 mod db;
 mod history;
@@ -575,6 +576,8 @@ pub enum Error {
     GenerationTooLarge(u64),
     /// A tag is empty or contains whitespace or `#`.
     InvalidTag(String),
+    /// Clipboard text cannot be interpreted as a node outline.
+    InvalidClipboard(String),
     /// An inline reference does not cover a valid `[[label]]` range.
     InvalidReferenceRange {
         /// Inclusive UTF-8 byte offset supplied by the client.
@@ -689,6 +692,9 @@ impl fmt::Display for Error {
                 )
             }
             Self::InvalidTag(tag) => write!(formatter, "invalid tag: {tag:?}"),
+            Self::InvalidClipboard(reason) => {
+                write!(formatter, "invalid clipboard outline: {reason}")
+            }
             Self::InvalidReferenceRange { start, end } => {
                 write!(formatter, "invalid reference range: {start}..{end}")
             }
