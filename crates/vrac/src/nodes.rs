@@ -17,9 +17,19 @@ use crate::{
 
 pub(crate) type RawNode = (Vec<u8>, Option<Vec<u8>>, i64, String, Option<String>);
 
+const SEARCH_CANDIDATE_MULTIPLIER: usize = 16;
+
 struct StoredNode {
     node: Node,
     position: i64,
+}
+
+struct SearchCandidate {
+    stored: StoredNode,
+    referenced_root: bool,
+    tagged: bool,
+    outgoing_reference: bool,
+    score: f64,
 }
 
 impl Engine {
@@ -390,31 +400,110 @@ impl Engine {
 
     /// Searches node text using a bounded full-text prefix query.
     ///
-    /// Empty or punctuation-only queries return no results. FTS stops as soon
-    /// as the requested result limit is reached.
+    /// Empty or punctuation-only queries return no results. A bounded FTS
+    /// candidate set is ranked by product usefulness before hydration.
     pub fn search(&self, query: &str, limit: usize) -> Result<Vec<Node>> {
         validate_search_limit(limit)?;
+        let exact = query.trim();
         let Some(query) = search_query(query) else {
             return Ok(Vec::new());
         };
-        let limit = i64::try_from(limit).map_err(|_| Error::InvalidPageLimit {
+        let candidate_limit = limit
+            .saturating_mul(SEARCH_CANDIDATE_MULTIPLIER)
+            .min(MAX_PAGE_SIZE);
+        let sql_candidate_limit =
+            i64::try_from(candidate_limit).map_err(|_| Error::InvalidPageLimit {
+                limit,
+                maximum: MAX_PAGE_SIZE,
+            })?;
+        let sql_limit = i64::try_from(limit).map_err(|_| Error::InvalidPageLimit {
             limit,
             maximum: MAX_PAGE_SIZE,
         })?;
-        let mut statement = self.connection.prepare_cached(
+        let mut candidates = Vec::with_capacity(candidate_limit.saturating_add(limit));
+
+        let mut exact_roots = self.connection.prepare_cached(
             "SELECT nodes.id, nodes.parent_id, nodes.position, nodes.text, nodes.system_key
+             FROM nodes INDEXED BY nodes_by_root_text
+             WHERE nodes.parent_id IS NULL
+               AND nodes.text = ?1
+               AND EXISTS (
+                   SELECT 1 FROM node_references AS incoming
+                   WHERE incoming.target_id = nodes.id
+               )
+             ORDER BY nodes.text, nodes.position, nodes.id
+             LIMIT ?2",
+        )?;
+        let rows = exact_roots.query_map(params![exact, sql_limit], |row| {
+            Ok((raw_node(row)?, true, false, false, f64::NEG_INFINITY))
+        })?;
+        for row in rows {
+            let (raw, referenced_root, tagged, outgoing_reference, score) = row?;
+            candidates.push(SearchCandidate {
+                stored: decode_stored_node(raw)?,
+                referenced_root,
+                tagged,
+                outgoing_reference,
+                score,
+            });
+        }
+
+        let mut statement = self.connection.prepare_cached(
+            "SELECT nodes.id, nodes.parent_id, nodes.position, nodes.text, nodes.system_key,
+                    nodes.parent_id IS NULL AND EXISTS (
+                        SELECT 1 FROM node_references AS incoming
+                        WHERE incoming.target_id = nodes.id
+                    ),
+                    EXISTS (SELECT 1 FROM node_tags WHERE node_tags.node_id = nodes.id),
+                    EXISTS (
+                        SELECT 1 FROM node_references AS outgoing
+                        WHERE outgoing.source_id = nodes.id
+                    ),
+                    bm25(node_search)
              FROM node_search
              JOIN nodes ON nodes.rowid = node_search.rowid
              WHERE node_search MATCH ?1
              LIMIT ?2",
         )?;
-        let rows = statement.query_map(params![query, limit], raw_node)?;
-        let stored = rows
-            .map(|row| row.map_err(Error::from).and_then(decode_stored_node))
-            .collect::<Result<Vec<_>>>()?;
-        let mut nodes = stored
+        let rows = statement.query_map(params![query, sql_candidate_limit], |row| {
+            Ok((
+                raw_node(row)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+            ))
+        })?;
+        for row in rows {
+            let (raw, referenced_root, tagged, outgoing_reference, score) = row?;
+            candidates.push(SearchCandidate {
+                stored: decode_stored_node(raw)?,
+                referenced_root,
+                tagged,
+                outgoing_reference,
+                score,
+            });
+        }
+
+        let exact_lower = exact.to_lowercase();
+        candidates.sort_by(|left, right| {
+            search_priority(left)
+                .cmp(&search_priority(right))
+                .then_with(|| {
+                    let left_exact = left.stored.node.text.to_lowercase() == exact_lower;
+                    let right_exact = right.stored.node.text.to_lowercase() == exact_lower;
+                    right_exact.cmp(&left_exact)
+                })
+                .then_with(|| left.score.total_cmp(&right.score))
+                .then_with(|| left.stored.position.cmp(&right.stored.position))
+                .then_with(|| left.stored.node.id.cmp(&right.stored.node.id))
+        });
+        let mut seen = HashSet::new();
+        let mut nodes = candidates
             .into_iter()
-            .map(|stored| stored.node)
+            .filter(|candidate| seen.insert(candidate.stored.node.id))
+            .take(limit)
+            .map(|candidate| candidate.stored.node)
             .collect::<Vec<_>>();
         hydrate_nodes(&self.connection, &mut nodes)?;
         Ok(nodes)
@@ -587,6 +676,18 @@ fn search_query(value: &str) -> Option<String> {
         .map(|term| format!("\"{term}\"*"))
         .collect::<Vec<_>>();
     (!terms.is_empty()).then(|| terms.join(" AND "))
+}
+
+fn search_priority(candidate: &SearchCandidate) -> u8 {
+    if candidate.referenced_root {
+        0
+    } else if candidate.tagged {
+        1
+    } else if !candidate.outgoing_reference {
+        2
+    } else {
+        3
+    }
 }
 
 pub(crate) fn next_position(connection: &Connection, parent_id: Option<NodeId>) -> Result<i64> {

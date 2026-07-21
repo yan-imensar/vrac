@@ -207,7 +207,9 @@ its hierarchy atomically. Complete `[[labels]]` in typed or pasted text reuse
 an exact root concept or create it in the same mutation; an empty root is
 removed again when its final reference disappears. `dd` copies successfully before deleting.
 The copied text remains directly usable in any other application. `:` and `/`
-expand the same bottom area for commands and indexed node search. Session undo
+expand the same bottom area for commands and indexed node search. Search puts
+referenced root concepts first, followed by tagged notes, ordinary text, and
+finally notes whose match is part of an outgoing `[[reference]]`. Session undo
 and redo are available through
 `:undo` / `:redo`, Vim `u` / `Ctrl-R`, and the platform `Undo` / `Redo`
 shortcuts. When the current bullet has incoming references, their original

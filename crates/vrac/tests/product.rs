@@ -440,6 +440,44 @@ fn search_is_bounded_prefix_based_and_tracks_text_changes() {
 }
 
 #[test]
+fn search_prioritizes_concepts_then_tagged_notes_and_plain_text() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let source = create(&mut engine, "Work on [[vrac]]");
+    let concept = engine
+        .node(source.references[0].target_id)
+        .expect("read concept")
+        .expect("created vrac concept");
+
+    let mut tagged_input = CreateNode::new("vrac project note");
+    tagged_input.tags = vec!["project".into()];
+    let tagged = engine
+        .create_node(tagged_input)
+        .expect("create tagged note");
+    let plain = create(&mut engine, "vrac plain note");
+
+    let results = engine.search("vrac", 8).expect("search vrac");
+    let ids = results.iter().map(|node| node.id).collect::<Vec<_>>();
+    assert_eq!(ids, vec![concept.id, tagged.id, plain.id, source.id]);
+}
+
+#[test]
+fn search_keeps_an_exact_referenced_root_outside_the_fts_window() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    for index in 0..140 {
+        create(&mut engine, &format!("vrac distractor {index}"));
+    }
+    let source = create(&mut engine, "Late mention of [[vrac]]");
+    let concept_id = source.references[0].target_id;
+
+    let results = engine.search("vrac", 8).expect("search vrac");
+    assert_eq!(results[0].id, concept_id);
+    assert_eq!(
+        results.iter().filter(|node| node.id == concept_id).count(),
+        1
+    );
+}
+
+#[test]
 fn deleting_a_subtree_is_atomic_and_preserves_external_references() {
     let mut engine = Engine::open(":memory:").expect("open database");
     let root = create(&mut engine, "Project");
