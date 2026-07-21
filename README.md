@@ -149,6 +149,8 @@ and installs its own working copy automatically.
 A checkpoint is created with the workspace and refreshed immediately before a
 local copy is removed while the folder is available. There is no arbitrary
 timer yet; immutable changes remain sufficient to reconstruct the workspace.
+If checkpoint publication is interrupted between its two atomic renames, the
+next refresh restores the previous known-good checkpoint before trying again.
 Package pruning and a periodic compaction policy are deferred until real usage
 demonstrates a threshold, avoiding a distributed cleanup protocol in the MVP.
 Sync runs off the UI thread after local edits, every two seconds while the
