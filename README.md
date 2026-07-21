@@ -88,6 +88,12 @@ main-outline stress pass containing 100 creates, 100 persisted edits, and 20
 complete 100-row reloads used about 199 MiB and remained below the next 60 Hz
 paint at p95 for every measured interaction.
 
+A later dismissal regression pass confirmed that AeroSpace WebView teardown is
+not part of the interactive path: the installed release capture disappeared in
+11 ms with Escape, an isolated Journal save disappeared in 14 ms, and the next
+capture opened in 222 ms. The bundle remained 7,124 KiB and the initial main
+view measured 82,660,544 bytes of combined physical footprint.
+
 The local gates are 8 MiB for the bundle, 1.5 seconds for startup, 96 MiB for
 the initial view, 224 MiB after the stress pass, and 1% idle CPU. These are
 regression limits for the reference Mac, not estimates for iOS, Android,
