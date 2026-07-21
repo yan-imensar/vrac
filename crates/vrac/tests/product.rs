@@ -129,6 +129,44 @@ fn journal_days_are_visible_tagged_protected_and_referenceable() {
 }
 
 #[test]
+fn new_journal_days_stay_first_after_reopening() {
+    let database = TestDatabase::new();
+    let mut engine = Engine::open(database.path()).expect("open database");
+    let journal = engine
+        .children(None, Page::default())
+        .expect("read roots")
+        .nodes
+        .into_iter()
+        .find(|node| node.system == Some(SystemNode::Journal))
+        .expect("journal exists");
+    engine.journal_day("2026-07-19").expect("create first day");
+    engine.journal_day("2026-07-20").expect("create newest day");
+    assert_eq!(
+        engine
+            .children(Some(journal.id), Page::default())
+            .expect("read days")
+            .nodes
+            .iter()
+            .map(|node| node.text.as_str())
+            .collect::<Vec<_>>(),
+        ["2026-07-20", "2026-07-19"]
+    );
+    drop(engine);
+
+    let engine = Engine::open(database.path()).expect("reopen database");
+    assert_eq!(
+        engine
+            .children(Some(journal.id), Page::default())
+            .expect("read persisted days")
+            .nodes
+            .iter()
+            .map(|node| node.text.as_str())
+            .collect::<Vec<_>>(),
+        ["2026-07-20", "2026-07-19"]
+    );
+}
+
+#[test]
 fn backlinks_inherit_reference_context_downward_and_filter_by_tag() {
     let mut engine = Engine::open(":memory:").expect("open database");
     let northstar = create(&mut engine, "Northstar");

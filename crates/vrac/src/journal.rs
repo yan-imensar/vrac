@@ -42,7 +42,7 @@ pub(crate) fn ensure_journal_day(connection: &Connection, date: &str) -> Result<
         return Ok((id, false));
     }
     let journal_id = journal_id(connection)?;
-    let position = position_for_placement(connection, Some(journal_id), Placement::Last, None)?;
+    let position = position_for_placement(connection, Some(journal_id), Placement::First, None)?;
     let id = random_node_id(connection)?;
     connection.execute(
         "INSERT INTO nodes (id, parent_id, position, text, system_key)

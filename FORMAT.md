@@ -36,8 +36,9 @@ or synchronized.
 `journal` identifies the visible root-level Journal container and
 `journal-day:YYYY-MM-DD` identifies one protected calendar day below it. Their
 text, placement, and deletion are protected while their children remain normal
-editable nodes. Journal days carry the canonical `journal` tag. Clients cannot
-assign a system key or remove that required tag.
+editable nodes. Each newly created day is placed first so the current day stays
+at the top during ordinary use. Journal days carry the canonical `journal` tag.
+Clients cannot assign a system key or remove that required tag.
 
 Tags are unordered properties stored without a visual `#`. The engine trims
 them, converts them to Unicode lowercase, rejects empty values, whitespace and
