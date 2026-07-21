@@ -28,7 +28,7 @@ impl Engine {
         let transaction = self.connection.unchecked_transaction()?;
         let (id, _) = ensure_journal_day(&transaction, date)?;
         commit_mutation(transaction, captured, self.sync_device_id)?;
-        self.history.clear();
+        self.history.discard_redo();
         self.node(id)?.ok_or_else(|| {
             Error::InvalidDatabase("a newly created journal day could not be read".into())
         })

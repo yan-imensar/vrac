@@ -112,6 +112,30 @@ fn history_is_bounded_session_local_and_new_writes_clear_redo() {
 }
 
 #[test]
+fn creating_a_journal_day_preserves_undo_but_clears_redo() {
+    let mut engine = Engine::open(":memory:").expect("open workspace");
+    let node = engine
+        .create_node(CreateNode::new("Original"))
+        .expect("create node");
+    engine
+        .set_text(node.id, "Edited".into())
+        .expect("edit node");
+    assert!(engine.undo().expect("undo edit"));
+
+    let day = engine
+        .journal_day("2026-07-21")
+        .expect("create journal day");
+    assert!(!engine.redo().expect("system mutation clears redo"));
+    assert!(
+        engine
+            .undo()
+            .expect("earlier user mutation remains undoable")
+    );
+    assert!(engine.node(node.id).unwrap().is_none());
+    assert!(engine.node(day.id).unwrap().is_some());
+}
+
+#[test]
 fn no_op_edits_preserve_redo_and_oversized_edits_drop_history() {
     let mut engine = Engine::open(":memory:").expect("open workspace");
     let node = engine

@@ -95,9 +95,10 @@ summed process RSS overstates WebKit usage.
 
 `Engine::checkpoint(destination)` creates a complete SQLite snapshot through
 SQLite's online backup API. It validates the schema and all integrity rules
-before publishing the destination, never copies an open database or its WAL,
-and never overwrites an existing file. The resulting file is an ordinary
-workspace that can be opened directly.
+before publishing the destination, including consistency between canonical
+node text and its derived full-text index. It never copies an open database or
+its WAL and never overwrites an existing file. The resulting file is an
+ordinary workspace that can be opened directly.
 
 `Engine::restore_checkpoint(checkpoint, recovery)` validates that the
 checkpoint belongs to the current workspace, creates `recovery` from the
@@ -282,7 +283,9 @@ The engine returns typed errors and never prints or terminates the process.
 Public error categories cover SQLite failures, invalid or unsupported
 workspaces, missing nodes or parents, invalid relative placement, cycles,
 pagination limits, invalid tags or references, and performance-data generation
-limits. Synchronization errors distinguish malformed, foreign, out-of-order,
+limits. Performance-data generation is rejected after synchronization has been
+activated so generated mutations cannot escape the synchronization outbox.
+Synchronization errors distinguish malformed, foreign, out-of-order,
 causally blocked, and conflicting packages. Checkpoint errors distinguish an
 existing destination, failed integrity validation, and filesystem failures.
 

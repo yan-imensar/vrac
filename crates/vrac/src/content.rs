@@ -132,6 +132,10 @@ impl Engine {
             });
         }
         let prefix = canonicalize_tag_prefix(prefix)?;
+        let sql_limit = i64::try_from(limit).map_err(|_| Error::InvalidPageLimit {
+            limit,
+            maximum: MAX_PAGE_SIZE,
+        })?;
         let mut tags = Vec::with_capacity(limit);
         if prefix.is_empty() {
             let mut statement = self.connection.prepare_cached(
@@ -140,7 +144,7 @@ impl Engine {
                  ORDER BY tag
                  LIMIT ?1",
             )?;
-            let rows = statement.query_map([limit as i64], |row| row.get(0))?;
+            let rows = statement.query_map([sql_limit], |row| row.get(0))?;
             for tag in rows {
                 tags.push(tag?);
             }
@@ -163,8 +167,8 @@ impl Engine {
         };
         let mut statement = self.connection.prepare_cached(sql)?;
         let mut rows = match upper {
-            Some(upper) => statement.query(params![prefix, upper, limit as i64])?,
-            None => statement.query(params![prefix, limit as i64])?,
+            Some(upper) => statement.query(params![prefix, upper, sql_limit])?,
+            None => statement.query(params![prefix, sql_limit])?,
         };
         while let Some(row) = rows.next()? {
             tags.push(row.get(0)?);

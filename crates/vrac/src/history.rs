@@ -60,6 +60,10 @@ impl History {
         self.undo.clear();
         self.redo.clear();
     }
+
+    pub(crate) fn discard_redo(&mut self) {
+        self.redo.clear();
+    }
 }
 
 impl Engine {

@@ -594,6 +594,8 @@ pub enum Error {
     PositionOverflow,
     /// Requested performance dataset cannot be represented in memory.
     GenerationTooLarge(u64),
+    /// Performance data generation is disabled on a synchronized workspace.
+    GenerationOnSynchronizedWorkspace,
     /// A tag is empty or contains whitespace or `#`.
     InvalidTag(String),
     /// Clipboard text cannot be interpreted as a node outline.
@@ -711,6 +713,8 @@ impl fmt::Display for Error {
                     "the generator cannot create {count} nodes at once"
                 )
             }
+            Self::GenerationOnSynchronizedWorkspace => formatter
+                .write_str("performance data generation is disabled on synchronized workspaces"),
             Self::InvalidTag(tag) => write!(formatter, "invalid tag: {tag:?}"),
             Self::InvalidClipboard(reason) => {
                 write!(formatter, "invalid clipboard outline: {reason}")

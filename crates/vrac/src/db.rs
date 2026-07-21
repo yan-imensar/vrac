@@ -82,6 +82,18 @@ impl Engine {
         }
         drop(integrity);
 
+        if !self.connection.is_readonly("main")?
+            && let Err(error) = verify_search_index(&self.connection)
+        {
+            if issues.len() < MAX_REPORTED_ISSUES {
+                issues.push(CheckIssue::SqliteIntegrity(format!(
+                    "full-text search index: {error}"
+                )));
+            } else {
+                issues.push(CheckIssue::AdditionalIssuesOmitted);
+            }
+        }
+
         let mut foreign_keys = self.connection.prepare("PRAGMA foreign_key_check")?;
         let mut rows = foreign_keys.query([])?;
         let mut foreign_key_issue_count = 0_usize;
@@ -176,6 +188,15 @@ impl Engine {
 
         Ok(CheckReport { node_count, issues })
     }
+}
+
+pub(crate) fn verify_search_index(connection: &Connection) -> rusqlite::Result<()> {
+    connection
+        .execute(
+            "INSERT INTO node_search(node_search, rank) VALUES ('integrity-check', 1)",
+            [],
+        )
+        .map(|_| ())
 }
 
 fn enable_foreign_keys(connection: &Connection) -> Result<()> {

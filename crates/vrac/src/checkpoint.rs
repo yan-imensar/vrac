@@ -5,7 +5,7 @@ use std::path::Path;
 use rusqlite::{Connection, MAIN_DB, OpenFlags};
 use tempfile::NamedTempFile;
 
-use crate::db::Engine;
+use crate::db::{Engine, verify_search_index};
 use crate::schema::prepare_database;
 use crate::sync::{capture_session, commit_mutation};
 use crate::{Error, Result};
@@ -37,6 +37,7 @@ impl Engine {
         if self.sync_device_id.is_some() {
             self.next_sync_package()?;
         }
+        verify_search_index(&self.connection)?;
 
         let parent = destination
             .parent()

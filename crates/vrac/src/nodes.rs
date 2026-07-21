@@ -517,6 +517,9 @@ impl Engine {
         if count == 0 {
             return Ok(());
         }
+        if self.sync_device_id.is_some() {
+            return Err(Error::GenerationOnSynchronizedWorkspace);
+        }
 
         let count_usize = usize::try_from(count).map_err(|_| Error::GenerationTooLarge(count))?;
         let transaction = self.connection.transaction()?;
@@ -571,6 +574,7 @@ impl Engine {
 
         drop(insert);
         transaction.commit()?;
+        self.history.clear();
         Ok(())
     }
 }

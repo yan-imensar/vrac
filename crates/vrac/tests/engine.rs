@@ -4,7 +4,7 @@ use rusqlite::{Connection, params};
 use tempfile::TempDir;
 use vrac::{
     CheckIssue, CreateNode, Cursor, Destination, Engine, Error, GenerateShape, Node, NodeId, Page,
-    Placement,
+    Placement, SyncDeviceId,
 };
 
 const VRAC_APPLICATION_ID: i64 = 0x5652_4143;
@@ -562,6 +562,56 @@ fn a_generation_error_rolls_back_every_insert_in_its_transaction() {
     let report = engine.check().expect("check database");
     assert!(report.is_ok());
     assert_eq!(report.node_count, 2);
+}
+
+#[test]
+fn performance_generation_is_rejected_on_a_synchronized_workspace() {
+    let database = TestDatabase::new();
+    let mut engine = Engine::open_synced(database.path(), SyncDeviceId::from_bytes([7; 16]))
+        .expect("open synchronized database");
+
+    assert!(matches!(
+        engine.generate_nodes(1, GenerateShape::Wide),
+        Err(Error::GenerationOnSynchronizedWorkspace)
+    ));
+    assert_eq!(engine.check().expect("check database").node_count, 1);
+    assert!(
+        !engine
+            .has_pending_sync_changes()
+            .expect("read pending synchronization state")
+    );
+}
+
+#[test]
+fn check_detects_drift_between_node_text_and_the_search_index() {
+    let database = TestDatabase::new();
+    let mut engine = Engine::open(database.path()).expect("open database");
+    let node = create_node(&mut engine, None, Placement::Last, "Searchable text");
+    drop(engine);
+
+    let connection = Connection::open(database.path()).expect("open raw SQLite database");
+    let rowid: i64 = connection
+        .query_row(
+            "SELECT rowid FROM nodes WHERE id = ?1",
+            params![&node.id.as_bytes()[..]],
+            |row| row.get(0),
+        )
+        .expect("read node rowid");
+    connection
+        .execute(
+            "INSERT INTO node_search(node_search, rowid, text)
+             VALUES ('delete', ?1, ?2)",
+            params![rowid, node.text],
+        )
+        .expect("remove search index entry");
+    drop(connection);
+
+    let engine = Engine::open(database.path()).expect("reopen database");
+    let report = engine.check().expect("check database");
+    assert!(report.issues.iter().any(|issue| {
+        matches!(issue, CheckIssue::SqliteIntegrity(message)
+            if message.starts_with("full-text search index:"))
+    }));
 }
 
 #[test]

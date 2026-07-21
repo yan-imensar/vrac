@@ -60,16 +60,15 @@ pub(crate) fn resolve_device(
         .map(decode_device_id)
         .transpose()?;
 
-    match (active, requested) {
+    let device_id = match (active, requested) {
         (Some(active), Some(requested)) if active != requested => {
             return Err(Error::SyncDeviceMismatch { active, requested });
         }
         (Some(active), _) => return Ok(Some(active)),
         (None, None) => return Ok(None),
-        (None, Some(_)) => {}
-    }
+        (None, Some(requested)) => requested,
+    };
 
-    let device_id = requested.expect("requested device handled above");
     let transaction = connection.transaction()?;
     transaction.execute(
         "INSERT INTO sync_devices (device_id, next_sequence)
@@ -318,7 +317,16 @@ impl Engine {
         }
 
         let first_sequence = sequence(changes[0].0)?;
-        let last_sequence = sequence(changes.last().expect("non-empty changes").0)?;
+        let last_sequence = sequence(
+            changes
+                .last()
+                .ok_or_else(|| {
+                    Error::InvalidDatabase(
+                        "a non-empty synchronization outbox lost its final row".into(),
+                    )
+                })?
+                .0,
+        )?;
         for (offset, (actual, _)) in changes.iter().enumerate() {
             let expected = first_sequence
                 .checked_add(u64::try_from(offset).map_err(|_| {
@@ -354,8 +362,8 @@ impl Engine {
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 device_id.as_bytes().as_slice(),
-                i64::try_from(first_sequence).expect("SQLite sequence"),
-                i64::try_from(last_sequence).expect("SQLite sequence"),
+                sqlite_sequence(first_sequence)?,
+                sqlite_sequence(last_sequence)?,
                 package.id.as_slice(),
                 package.bytes
             ],
@@ -388,12 +396,14 @@ impl Engine {
              WHERE device_id = ?1 AND sequence BETWEEN ?2 AND ?3",
             params![
                 device_id.as_bytes().as_slice(),
-                i64::try_from(package.first_sequence).expect("SQLite sequence"),
-                i64::try_from(package.last_sequence).expect("SQLite sequence")
+                sqlite_sequence(package.first_sequence)?,
+                sqlite_sequence(package.last_sequence)?
             ],
         )?;
         let expected = usize::try_from(package.last_sequence - package.first_sequence + 1)
-            .expect("bounded package");
+            .map_err(|_| {
+                Error::InvalidDatabase("the prepared synchronization package is too large".into())
+            })?;
         if deleted != expected {
             return Err(Error::InvalidDatabase(
                 "the prepared synchronization package does not match its outbox rows".into(),
@@ -409,7 +419,7 @@ impl Engine {
              WHERE device_id = ?1",
             params![
                 device_id.as_bytes().as_slice(),
-                i64::try_from(package.last_sequence).expect("SQLite sequence"),
+                sqlite_sequence(package.last_sequence)?,
                 package.id.as_slice()
             ],
         )?;
@@ -504,7 +514,7 @@ impl Engine {
                  applied_package = excluded.applied_package",
             params![
                 package.device_id.as_bytes().as_slice(),
-                i64::try_from(package.last_sequence).expect("SQLite sequence"),
+                sqlite_sequence(package.last_sequence)?,
                 package.id.as_slice()
             ],
         )?;
@@ -625,20 +635,22 @@ fn validate_merged_state(
         while let Some(row) = rows.next()? {
             let start: i64 = row.get(0)?;
             let end: i64 = row.get(1)?;
-            let valid = usize::try_from(start)
-                .ok()
-                .zip(usize::try_from(end).ok())
-                .is_some_and(|(start, end)| {
-                    start >= previous_end && reference_range_is_valid(&text, start, end)
+            let Some((start, end)) = usize::try_from(start).ok().zip(usize::try_from(end).ok())
+            else {
+                return Err(Error::SyncConflict {
+                    device_id,
+                    first_sequence,
+                    last_sequence,
                 });
-            if !valid {
+            };
+            if start < previous_end || !reference_range_is_valid(&text, start, end) {
                 return Err(Error::SyncConflict {
                     device_id,
                     first_sequence,
                     last_sequence,
                 });
             }
-            previous_end = usize::try_from(end).expect("validated reference end");
+            previous_end = end;
         }
     }
     Ok(())
@@ -736,6 +748,11 @@ fn sequence_allow_zero(value: i64) -> Result<u64> {
         .map_err(|_| Error::InvalidDatabase("a synchronization sequence is negative".into()))
 }
 
+fn sqlite_sequence(value: u64) -> Result<i64> {
+    i64::try_from(value)
+        .map_err(|_| Error::InvalidDatabase("a synchronization sequence is too large".into()))
+}
+
 fn encode_package(
     workspace_id: WorkspaceId,
     device_id: SyncDeviceId,
@@ -794,7 +811,8 @@ fn parse_package(bytes: &[u8]) -> Result<ParsedPackage<'_>> {
             "payload length does not match".into(),
         ));
     }
-    let id = hash.try_into().expect("fixed package hash");
+    let mut id = [0_u8; PACKAGE_HASH_LENGTH];
+    id.copy_from_slice(hash);
     Ok(ParsedPackage {
         workspace_id,
         device_id,
@@ -813,5 +831,7 @@ fn take<const N: usize>(input: &mut &[u8]) -> Result<[u8; N]> {
     }
     let (value, remaining) = input.split_at(N);
     *input = remaining;
-    Ok(value.try_into().expect("fixed header field"))
+    let mut result = [0_u8; N];
+    result.copy_from_slice(value);
+    Ok(result)
 }

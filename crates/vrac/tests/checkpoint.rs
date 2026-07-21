@@ -110,6 +110,40 @@ fn an_invalid_snapshot_is_not_published() {
 }
 
 #[test]
+fn a_checkpoint_is_not_published_when_the_search_index_has_drifted() {
+    let directory = tempdir().expect("create temporary directory");
+    let source_path = directory.path().join("source.vrac");
+    let destination = directory.path().join("invalid-checkpoint.vrac");
+    let mut engine = Engine::open(&source_path).expect("open source");
+    let node = engine
+        .create_node(CreateNode::new("Searchable text"))
+        .expect("create node");
+
+    let connection = Connection::open(&source_path).expect("open raw source");
+    let rowid: i64 = connection
+        .query_row(
+            "SELECT rowid FROM nodes WHERE id = ?1",
+            params![&node.id.as_bytes()[..]],
+            |row| row.get(0),
+        )
+        .expect("read node rowid");
+    connection
+        .execute(
+            "INSERT INTO node_search(node_search, rowid, text)
+             VALUES ('delete', ?1, ?2)",
+            params![rowid, node.text],
+        )
+        .expect("remove search index entry");
+    drop(connection);
+
+    assert!(matches!(
+        engine.checkpoint(&destination),
+        Err(Error::Sqlite(_))
+    ));
+    assert!(!destination.exists());
+}
+
+#[test]
 fn restoring_a_checkpoint_is_atomic_and_keeps_the_replaced_state_recoverable() {
     let directory = tempdir().expect("create temporary directory");
     let source_path = directory.path().join("source.vrac");

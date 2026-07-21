@@ -42,15 +42,17 @@ impl Engine {
         if has_more {
             matches.pop();
         }
-        let next = has_more.then(|| {
-            let (id, sort_key) = matches
-                .last()
-                .expect("a non-empty page has a final backlink");
-            Cursor {
+        let next = if has_more {
+            let (id, sort_key) = matches.last().ok_or_else(|| {
+                Error::InvalidDatabase("a backlink page lost its continuation row".into())
+            })?;
+            Some(Cursor {
                 position: *sort_key,
                 id: *id,
-            }
-        });
+            })
+        } else {
+            None
+        };
         let match_ids = matches.into_iter().map(|(id, _)| id).collect::<Vec<_>>();
         let contexts = contextual_paths(&self.connection, &match_ids)?;
         Ok(BacklinkPage { contexts, next })
