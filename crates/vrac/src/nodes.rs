@@ -3,15 +3,16 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::content::{
-    canonicalize_tags, hydrate_nodes, replace_references, replace_tags, validate_references,
+    canonicalize_tags, hydrate_nodes, materialize_references, prune_empty_unreferenced_roots,
+    push_history_step, replace_references, replace_tags, validate_references,
 };
 use crate::db::Engine;
 use crate::journal::{decode_system_key, journal_container, protected_node};
 use crate::order::{POSITION_STEP, position_at, position_for_placement};
 use crate::sync::{capture_session, commit_mutation};
 use crate::{
-    CreateNode, Cursor, Destination, Error, GenerateShape, MAX_PAGE_SIZE, NODE_ID_LENGTH, Node,
-    NodeId, NodePage, Page, Placement, Result,
+    CreateNode, Cursor, DeleteOutcome, Destination, Error, GenerateShape, MAX_PAGE_SIZE,
+    NODE_ID_LENGTH, Node, NodeId, NodePage, Page, Placement, Result,
 };
 
 pub(crate) type RawNode = (Vec<u8>, Option<Vec<u8>>, i64, String, Option<String>);
@@ -49,15 +50,27 @@ impl Engine {
         let id = random_node_id(&transaction)?;
         let parent_bytes = parent_id.as_ref().map(node_id_bytes);
 
+        let mut history = Vec::new();
+        let node_step = capture_session(&transaction)?;
         transaction.execute(
             "INSERT INTO nodes (id, parent_id, position, text) VALUES (?1, ?2, ?3, ?4)",
             params![node_id_bytes(&id), parent_bytes, position, &text],
         )?;
+        push_history_step(node_step, &mut history)?;
         let references = validate_references(&transaction, &text, references)?;
+        let materialize_step = capture_session(&transaction)?;
+        let (references, _) = materialize_references(&transaction, &text, references)?;
+        push_history_step(materialize_step, &mut history)?;
+        let tag_step = capture_session(&transaction)?;
         replace_tags(&transaction, id, &tags)?;
+        push_history_step(tag_step, &mut history)?;
+        let reference_step = capture_session(&transaction)?;
         replace_references(&transaction, id, &references)?;
+        push_history_step(reference_step, &mut history)?;
         let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
-        self.history.record(changeset);
+        if changeset.is_some() {
+            self.history.record_group(history);
+        }
 
         self.node(id)?
             .ok_or_else(|| Error::InvalidDatabase("a newly created node could not be read".into()))
@@ -211,12 +224,10 @@ impl Engine {
 
     /// Replaces a node's text atomically.
     pub fn set_text(&mut self, id: NodeId, text: String) -> Result<()> {
-        let captured = capture_session(&self.connection)?;
-        let transaction = self.connection.unchecked_transaction()?;
-        if protected_node(&transaction, id)? {
-            return Err(Error::SystemNodeProtected(id));
+        if !node_exists(&self.connection, id)? {
+            return Err(Error::NodeNotFound(id));
         }
-        let has_references: bool = transaction.query_row(
+        let has_references: bool = self.connection.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM node_references WHERE source_id = ?1
              )",
@@ -226,16 +237,7 @@ impl Engine {
         if has_references {
             return Err(Error::NodeHasReferences(id));
         }
-        let changed = transaction.execute(
-            "UPDATE nodes SET text = ?1 WHERE id = ?2 AND text <> ?1",
-            params![text, node_id_bytes(&id)],
-        )?;
-        if changed == 0 && !node_exists(&transaction, id)? {
-            return Err(Error::NodeNotFound(id));
-        }
-        let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
-        self.history.record(changeset);
-        Ok(())
+        self.set_content(id, text, Vec::new()).map(drop)
     }
 
     /// Moves a node and its subtree atomically.
@@ -294,8 +296,9 @@ impl Engine {
     ///
     /// The operation is rejected when a node in the subtree is referenced by
     /// a node outside it. References contained inside the subtree disappear
-    /// with their source nodes.
-    pub fn delete_node(&mut self, id: NodeId) -> Result<u64> {
+    /// with their source nodes, and former targets that become empty detached
+    /// roots are removed in the same transaction.
+    pub fn delete_node(&mut self, id: NodeId) -> Result<DeleteOutcome> {
         let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
         if !node_exists(&transaction, id)? {
@@ -328,6 +331,26 @@ impl Engine {
             return Err(Error::NodeReferenced(target_id));
         }
 
+        let detached_targets = {
+            let mut statement = transaction.prepare(
+                "WITH RECURSIVE subtree(id) AS (
+                     SELECT ?1
+                     UNION
+                     SELECT nodes.id FROM nodes JOIN subtree ON nodes.parent_id = subtree.id
+                 )
+                 SELECT DISTINCT refs.target_id
+                 FROM node_references AS refs
+                 JOIN subtree AS sources ON sources.id = refs.source_id
+                 LEFT JOIN subtree AS targets ON targets.id = refs.target_id
+                 WHERE targets.id IS NULL
+                 ORDER BY refs.target_id",
+            )?;
+            let rows =
+                statement.query_map(params![node_id_bytes(&id)], |row| row.get::<_, Vec<u8>>(0))?;
+            rows.map(|row| row.map_err(Error::from).and_then(decode_id))
+                .collect::<Result<Vec<_>>>()?
+        };
+
         let count: i64 = transaction.query_row(
             "WITH RECURSIVE subtree(id) AS (
                  SELECT ?1
@@ -338,6 +361,8 @@ impl Engine {
             params![node_id_bytes(&id)],
             |row| row.get(0),
         )?;
+        let mut history = Vec::new();
+        let delete_step = capture_session(&transaction)?;
         transaction.execute(
             "WITH RECURSIVE subtree(id) AS (
                  SELECT ?1
@@ -347,10 +372,20 @@ impl Engine {
              DELETE FROM nodes WHERE id IN (SELECT id FROM subtree)",
             params![node_id_bytes(&id)],
         )?;
+        push_history_step(delete_step, &mut history)?;
+        let prune_step = capture_session(&transaction)?;
+        let pruned_roots = prune_empty_unreferenced_roots(&transaction, None, &detached_targets)?;
+        push_history_step(prune_step, &mut history)?;
         let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
-        self.history.record(changeset);
-        u64::try_from(count)
-            .map_err(|_| Error::InvalidDatabase("SQLite returned a negative delete count".into()))
+        if changeset.is_some() {
+            self.history.record_group(history);
+        }
+        Ok(DeleteOutcome {
+            deleted_nodes: u64::try_from(count).map_err(|_| {
+                Error::InvalidDatabase("SQLite returned a negative delete count".into())
+            })?,
+            pruned_roots,
+        })
     }
 
     /// Searches node text using a bounded full-text prefix query.
@@ -554,7 +589,7 @@ fn search_query(value: &str) -> Option<String> {
     (!terms.is_empty()).then(|| terms.join(" AND "))
 }
 
-fn next_position(connection: &Connection, parent_id: Option<NodeId>) -> Result<i64> {
+pub(crate) fn next_position(connection: &Connection, parent_id: Option<NodeId>) -> Result<i64> {
     let parent_bytes = parent_id.as_ref().map(node_id_bytes);
     let maximum: Option<i64> = connection.query_row(
         "SELECT MAX(position) FROM nodes WHERE parent_id IS ?1",

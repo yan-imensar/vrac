@@ -85,7 +85,9 @@ fn journal_days_are_visible_tagged_protected_and_referenceable() {
 
     for result in [
         engine.set_text(day.id, "Tomorrow".into()),
-        engine.set_content(day.id, "Tomorrow".into(), Vec::new()),
+        engine
+            .set_content(day.id, "Tomorrow".into(), Vec::new())
+            .map(drop),
         engine.move_node(
             day.id,
             Destination {
@@ -423,7 +425,13 @@ fn deleting_a_subtree_is_atomic_and_preserves_external_references() {
     engine
         .set_content(source.id, "Reference removed".into(), Vec::new())
         .expect("remove external reference");
-    assert_eq!(engine.delete_node(root.id).expect("delete subtree"), 2);
+    assert_eq!(
+        engine
+            .delete_node(root.id)
+            .expect("delete subtree")
+            .deleted_nodes,
+        2
+    );
     assert!(engine.node(root.id).unwrap().is_none());
     assert!(engine.node(child.id).unwrap().is_none());
     assert!(engine.node(source.id).unwrap().is_some());
@@ -442,7 +450,13 @@ fn references_inside_a_deleted_subtree_do_not_block_deletion() {
         )
         .expect("create internal reference");
 
-    assert_eq!(engine.delete_node(root.id).expect("delete subtree"), 1);
+    assert_eq!(
+        engine
+            .delete_node(root.id)
+            .expect("delete subtree")
+            .deleted_nodes,
+        1
+    );
     assert!(engine.check().unwrap().is_ok());
 }
 
@@ -560,6 +574,111 @@ fn references_resolve_current_target_text_without_rewriting_sources() {
     assert_eq!(
         engine.node(source.id).unwrap().unwrap(),
         source_after_rename
+    );
+}
+
+#[test]
+fn removing_references_prunes_only_empty_unreferenced_roots() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let empty = create(&mut engine, "Empty");
+
+    let shared = create(&mut engine, "Shared");
+    let shared_text = "Also [[Shared]]";
+    let mut shared_source = CreateNode::new(shared_text);
+    shared_source.references = vec![reference(shared_text, "Shared", shared.id)];
+    engine
+        .create_node(shared_source)
+        .expect("create second incoming reference");
+
+    let mut tagged_input = CreateNode::new("Tagged");
+    tagged_input.tags = vec!["project".into()];
+    let tagged = engine
+        .create_node(tagged_input)
+        .expect("create tagged target");
+
+    let parent = create(&mut engine, "Parent");
+    let nested = create_child(&mut engine, parent.id, "Nested");
+
+    let with_child = create(&mut engine, "With child");
+    create_child(&mut engine, with_child.id, "Content");
+
+    let outgoing_text = "See [[Tagged]]";
+    let mut outgoing_input = CreateNode::new(outgoing_text);
+    outgoing_input.references = vec![reference(outgoing_text, "Tagged", tagged.id)];
+    let outgoing = engine
+        .create_node(outgoing_input)
+        .expect("create target with outgoing content");
+
+    let text = "[[Empty]] [[Shared]] [[Tagged]] [[Nested]] [[With child]] [[See Tagged]]";
+    let mut source_input = CreateNode::new(text);
+    source_input.references = vec![
+        reference(text, "Empty", empty.id),
+        reference(text, "Shared", shared.id),
+        reference(text, "Tagged", tagged.id),
+        reference(text, "Nested", nested.id),
+        reference(text, "With child", with_child.id),
+        reference(text, "See Tagged", outgoing.id),
+    ];
+    let source = engine.create_node(source_input).expect("create references");
+
+    assert_eq!(
+        engine
+            .set_content(source.id, "Detached".into(), Vec::new())
+            .expect("remove references"),
+        vrac::ContentUpdate {
+            references: Vec::new(),
+            materialized_nodes: Vec::new(),
+            pruned_roots: vec![empty.id],
+        }
+    );
+    assert!(engine.node(empty.id).unwrap().is_none());
+    for preserved in [shared.id, tagged.id, nested.id, with_child.id, outgoing.id] {
+        assert!(engine.node(preserved).unwrap().is_some());
+    }
+    assert!(engine.check().unwrap().is_ok());
+}
+
+#[test]
+fn complete_reference_syntax_reuses_or_creates_concepts_atomically() {
+    let mut engine = Engine::open(":memory:").expect("open database");
+    let existing = create(&mut engine, "Existing");
+    let source = create(&mut engine, "Draft");
+    let text = "[[Existing]] then [[New concept]] and [[New concept]]";
+
+    let update = engine
+        .set_content(source.id, text.into(), Vec::new())
+        .expect("materialize references");
+
+    assert_eq!(update.references.len(), 3);
+    assert_eq!(update.references[0].target_id, existing.id);
+    assert_eq!(
+        update.references[1].target_id,
+        update.references[2].target_id
+    );
+    assert_eq!(update.materialized_nodes.len(), 1);
+    assert_eq!(update.materialized_nodes[0].text, "New concept");
+    assert_eq!(
+        update.materialized_nodes[0].id,
+        update.references[1].target_id
+    );
+    assert!(update.pruned_roots.is_empty());
+    assert_eq!(
+        engine.node(source.id).unwrap().unwrap().references,
+        update.references
+    );
+
+    let created = engine
+        .create_node(CreateNode::new("Created with [[Create concept]]"))
+        .expect("materialize while creating");
+    assert_eq!(created.references[0].target_text, "Create concept");
+
+    let plain = create(&mut engine, "Plain");
+    engine
+        .set_text(plain.id, "Changed to [[Text concept]]".into())
+        .expect("materialize through text replacement");
+    assert_eq!(
+        engine.node(plain.id).unwrap().unwrap().references[0].target_text,
+        "Text concept"
     );
 }
 
@@ -927,5 +1046,29 @@ fn metadata_queries_use_their_dedicated_indexes() {
     assert!(
         plan.iter().all(|step| !step.contains("USE TEMP B-TREE")),
         "tag completion sorts outside the index: {plan:?}"
+    );
+
+    let mut statement = connection
+        .prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT id
+             FROM nodes INDEXED BY nodes_by_root_text
+             WHERE parent_id IS NULL AND text = ?1
+             ORDER BY text, position, id
+             LIMIT 1",
+        )
+        .expect("prepare root concept query plan");
+    let plan: Vec<String> = statement
+        .query_map(["Concept"], |row| row.get(3))
+        .expect("read root concept query plan")
+        .collect::<rusqlite::Result<_>>()
+        .expect("collect root concept query plan");
+    assert!(
+        plan.iter().any(|step| step.contains("nodes_by_root_text")),
+        "concept lookup does not use nodes_by_root_text: {plan:?}"
+    );
+    assert!(
+        plan.iter().all(|step| !step.contains("USE TEMP B-TREE")),
+        "concept lookup sorts outside the index: {plan:?}"
     );
 }

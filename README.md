@@ -203,7 +203,9 @@ controller drives normal, insert, and node-wise visual modes; the bottom status
 control toggles it without changing engine behavior. `yy`, visual `y`, and
 `:copy` write complete selected subtrees to the system clipboard as portable
 indented text bullets. `p` and `:paste` read that same clipboard and recreate
-its hierarchy atomically, while `dd` copies successfully before deleting.
+its hierarchy atomically. Complete `[[labels]]` in typed or pasted text reuse
+an exact root concept or create it in the same mutation; an empty root is
+removed again when its final reference disappears. `dd` copies successfully before deleting.
 The copied text remains directly usable in any other application. `:` and `/`
 expand the same bottom area for commands and indexed node search. Session undo
 and redo are available through
@@ -296,7 +298,8 @@ diagnostics to standard error. Its exit codes are:
 
 A Vrac workspace is an ordinary SQLite file. The current pre-production format
 uses `PRAGMA application_id = 0x56524143` (`VRAC` in ASCII) and
-`PRAGMA user_version = 2`. The engine validates both the marker and the exact
+`PRAGMA user_version = 3`. Version 2 receives the additive root-label index
+migration. The engine validates both the marker and the exact
 schema before accepting an existing file. Valid unmarked current databases are
 marked only after validation.
 

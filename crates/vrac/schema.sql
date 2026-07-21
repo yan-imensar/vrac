@@ -16,6 +16,9 @@ CREATE TABLE nodes (
 CREATE INDEX nodes_by_parent
     ON nodes(parent_id, position, id);
 
+CREATE INDEX nodes_by_root_text
+    ON nodes(text, position, id) WHERE parent_id IS NULL;
+
 CREATE TABLE node_tags (
     node_id BLOB NOT NULL REFERENCES nodes(id) ON DELETE CASCADE
             CHECK (typeof(node_id) = 'blob' AND length(node_id) = 16),

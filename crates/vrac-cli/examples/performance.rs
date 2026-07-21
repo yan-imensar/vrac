@@ -167,17 +167,37 @@ fn main() -> Result<(), Box<dyn StdError>> {
         };
         iteration += 1;
         let label_start = text.find("target").expect("updated reference label");
-        engine.set_content(
-            source.id,
-            text.into(),
-            vec![ReferenceInput {
-                label_start,
-                label_end: text.len() - 2,
-                target_id: created.id,
-            }],
-        )
+        engine
+            .set_content(
+                source.id,
+                text.into(),
+                vec![ReferenceInput {
+                    label_start,
+                    label_end: text.len() - 2,
+                    target_id: created.id,
+                }],
+            )
+            .map(drop)
     })?;
     record_interactive("set_content_p95", set_content_p95)?;
+
+    let mut iteration = 0;
+    let materialize_reference_p95 = measure_p95(|| {
+        let prefix = if iteration % 2 == 0 {
+            "Linked"
+        } else {
+            "Re-linked"
+        };
+        iteration += 1;
+        engine
+            .set_content(
+                source.id,
+                format!("{prefix} [[Updated performance probe B]]"),
+                Vec::new(),
+            )
+            .map(drop)
+    })?;
+    record_interactive("materialize_reference_p95", materialize_reference_p95)?;
 
     let mut iteration = 0;
     let move_p95 = measure_p95(|| {
@@ -286,7 +306,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let mut delete_samples = Vec::with_capacity(SAMPLE_COUNT);
     for node in deletion_nodes {
         let started = Instant::now();
-        if engine.delete_node(node.id)? != 1 {
+        if engine.delete_node(node.id)?.deleted_nodes != 1 {
             return Err(IoError::other("a deletion probe removed more than one node").into());
         }
         delete_samples.push(started.elapsed());

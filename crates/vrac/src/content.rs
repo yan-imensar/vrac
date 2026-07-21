@@ -1,13 +1,14 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use rusqlite::{Connection, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 
 use crate::db::Engine;
-use crate::journal::{decode_system_key, protected_node};
-use crate::nodes::{decode_id, node_exists, node_id_bytes};
+use crate::journal::{decode_system_key, ensure_journal_day, protected_node};
+use crate::nodes::{decode_id, next_position, node_exists, node_id_bytes, random_node_id};
 use crate::sync::{capture_session, commit_mutation};
 use crate::{
-    CheckIssue, Error, MAX_PAGE_SIZE, Node, NodeId, NodeReference, ReferenceInput, Result,
+    CheckIssue, ContentUpdate, Error, MAX_PAGE_SIZE, Node, NodeId, NodeReference, ReferenceInput,
+    Result,
 };
 
 const HYDRATION_BATCH_SIZE: usize = 1_000;
@@ -16,6 +17,7 @@ impl Engine {
     /// Replaces a node's text and outgoing references atomically.
     ///
     /// Reference ranges address the labels between `[[` and `]]` in `text`.
+    /// Complete ranges without an explicit target reuse or create concepts.
     /// Existing tags are preserved.
     ///
     /// # Example
@@ -41,21 +43,52 @@ impl Engine {
         id: NodeId,
         text: String,
         references: Vec<ReferenceInput>,
-    ) -> Result<()> {
+    ) -> Result<ContentUpdate> {
         let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
         if protected_node(&transaction, id)? {
             return Err(Error::SystemNodeProtected(id));
         }
         let references = validate_references(&transaction, &text, references)?;
+        let mut history = Vec::new();
+        let materialize_step = capture_session(&transaction)?;
+        let (references, materialized_ids) =
+            materialize_references(&transaction, &text, references)?;
+        push_history_step(materialize_step, &mut history)?;
+        let removed_targets = removed_reference_targets(&transaction, id, &references)?;
+        let text_step = capture_session(&transaction)?;
         transaction.execute(
             "UPDATE nodes SET text = ?1 WHERE id = ?2 AND text <> ?1",
             params![&text, node_id_bytes(&id)],
         )?;
+        push_history_step(text_step, &mut history)?;
+        let reference_step = capture_session(&transaction)?;
         replace_references(&transaction, id, &references)?;
+        push_history_step(reference_step, &mut history)?;
+        let prune_step = capture_session(&transaction)?;
+        let pruned_roots =
+            prune_empty_unreferenced_roots(&transaction, Some(id), &removed_targets)?;
+        push_history_step(prune_step, &mut history)?;
         let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
-        self.history.record(changeset);
-        Ok(())
+        if changeset.is_some() {
+            self.history.record_group(history);
+        }
+        let references = self.node(id)?.ok_or(Error::NodeNotFound(id))?.references;
+        let materialized_nodes = materialized_ids
+            .into_iter()
+            .map(|id| {
+                self.node(id)?.ok_or_else(|| {
+                    Error::InvalidDatabase(
+                        "a materialized reference target could not be read".into(),
+                    )
+                })
+            })
+            .collect::<Result<_>>()?;
+        Ok(ContentUpdate {
+            references,
+            materialized_nodes,
+            pruned_roots,
+        })
     }
 
     /// Replaces a node's unordered tag set atomically.
@@ -138,6 +171,18 @@ impl Engine {
         }
         Ok(tags)
     }
+}
+
+pub(crate) fn push_history_step(
+    mut session: rusqlite::session::Session<'_>,
+    history: &mut Vec<Vec<u8>>,
+) -> Result<()> {
+    let mut changeset = Vec::new();
+    session.changeset_strm(&mut changeset)?;
+    if !changeset.is_empty() {
+        history.push(changeset);
+    }
+    Ok(())
 }
 
 pub(crate) fn canonicalize_tags(tags: Vec<String>) -> Result<Vec<String>> {
@@ -355,6 +400,152 @@ pub(crate) fn replace_references(
         ])?;
     }
     Ok(())
+}
+
+pub(crate) fn materialize_references(
+    connection: &Connection,
+    text: &str,
+    mut references: Vec<ReferenceInput>,
+) -> Result<(Vec<ReferenceInput>, Vec<NodeId>)> {
+    let mut targets = HashMap::<String, NodeId>::new();
+    let mut materialized = Vec::new();
+    let mut cursor = 0;
+    while let Some(open) = text[cursor..].find("[[") {
+        let label_start = cursor + open + 2;
+        let Some(close) = text[label_start..].find("]]") else {
+            break;
+        };
+        let label_end = label_start + close;
+        cursor = label_end + 2;
+        if label_start == label_end
+            || references.iter().any(|reference| {
+                reference.label_start < label_end && label_start < reference.label_end
+            })
+        {
+            continue;
+        }
+        let label = text[label_start..label_end].trim();
+        if label.is_empty() {
+            continue;
+        }
+        let target_id = if let Some(id) = targets.get(label) {
+            *id
+        } else {
+            let (id, created) = resolve_or_create_concept(connection, label)?;
+            targets.insert(label.into(), id);
+            if created {
+                materialized.push(id);
+            }
+            id
+        };
+        references.push(ReferenceInput {
+            label_start,
+            label_end,
+            target_id,
+        });
+    }
+    Ok((
+        validate_references(connection, text, references)?,
+        materialized,
+    ))
+}
+
+fn resolve_or_create_concept(connection: &Connection, label: &str) -> Result<(NodeId, bool)> {
+    if looks_like_iso_date(label) {
+        return ensure_journal_day(connection, label);
+    }
+    let existing = connection
+        .query_row(
+            "SELECT id
+             FROM nodes INDEXED BY nodes_by_root_text
+             WHERE parent_id IS NULL AND text = ?1
+             ORDER BY text, position, id
+             LIMIT 1",
+            [label],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()?
+        .map(decode_id)
+        .transpose()?;
+    if let Some(id) = existing {
+        return Ok((id, false));
+    }
+    let id = random_node_id(connection)?;
+    let position = next_position(connection, None)?;
+    connection.execute(
+        "INSERT INTO nodes (id, parent_id, position, text)
+         VALUES (?1, NULL, ?2, ?3)",
+        params![node_id_bytes(&id), position, label],
+    )?;
+    Ok((id, true))
+}
+
+fn looks_like_iso_date(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| matches!(index, 4 | 7) || byte.is_ascii_digit())
+}
+
+fn removed_reference_targets(
+    connection: &Connection,
+    source_id: NodeId,
+    references: &[ReferenceInput],
+) -> Result<Vec<NodeId>> {
+    let retained: HashSet<NodeId> = references
+        .iter()
+        .map(|reference| reference.target_id)
+        .collect();
+    let mut statement = connection.prepare(
+        "SELECT DISTINCT target_id
+         FROM node_references
+         WHERE source_id = ?1
+         ORDER BY target_id",
+    )?;
+    let rows = statement.query_map(params![node_id_bytes(&source_id)], |row| {
+        row.get::<_, Vec<u8>>(0)
+    })?;
+    rows.map(|row| row.map_err(Error::from).and_then(decode_id))
+        .filter(|target| match target {
+            Ok(target) => !retained.contains(target),
+            Err(_) => true,
+        })
+        .collect()
+}
+
+pub(crate) fn prune_empty_unreferenced_roots(
+    connection: &Connection,
+    protected_id: Option<NodeId>,
+    candidates: &[NodeId],
+) -> Result<Vec<NodeId>> {
+    let mut pruned = Vec::new();
+    let mut delete = connection.prepare(
+        "DELETE FROM nodes
+         WHERE id = ?1
+           AND parent_id IS NULL
+           AND system_key IS NULL
+           AND NOT EXISTS (SELECT 1 FROM node_tags WHERE node_id = nodes.id)
+           AND NOT EXISTS (SELECT 1 FROM nodes AS children WHERE children.parent_id = nodes.id)
+           AND NOT EXISTS (
+               SELECT 1 FROM node_references AS incoming WHERE incoming.target_id = nodes.id
+           )
+           AND NOT EXISTS (
+               SELECT 1 FROM node_references AS outgoing WHERE outgoing.source_id = nodes.id
+           )",
+    )?;
+    for candidate in candidates {
+        if protected_id == Some(*candidate) {
+            continue;
+        }
+        if delete.execute(params![node_id_bytes(candidate)])? == 1 {
+            pruned.push(*candidate);
+        }
+    }
+    Ok(pruned)
 }
 
 pub(crate) fn hydrate_nodes(connection: &Connection, nodes: &mut [Node]) -> Result<()> {

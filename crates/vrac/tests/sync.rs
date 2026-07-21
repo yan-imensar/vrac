@@ -56,7 +56,7 @@ fn a_hierarchical_paste_synchronizes_as_one_atomic_mutation() {
                 parent_id: None,
                 placement: Placement::Last,
             },
-            "- Project #active\n  - First\n  - Second",
+            "- Project [[New concept]] #active\n  - First\n  - Second",
         )
         .expect("paste outline");
     let package = flush(&mut first);
@@ -67,6 +67,8 @@ fn a_hierarchical_paste_synchronizes_as_one_atomic_mutation() {
     );
     let root = second.node(pasted[0].id).unwrap().unwrap();
     assert_eq!(root.tags, ["active"]);
+    assert_eq!(root.references[0].target_text, "New concept");
+    assert!(second.node(root.references[0].target_id).unwrap().is_some());
     assert_eq!(
         second
             .children(Some(root.id), Page::default())

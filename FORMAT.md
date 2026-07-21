@@ -1,7 +1,7 @@
 # Vrac workspace format
 
-This document defines the only supported pre-production workspace format.
-There are no historical production formats and no migration code.
+This document defines the current pre-production workspace format. Version 2
+is upgraded in place by adding the derived root-label lookup index.
 
 ## File identity
 
@@ -9,7 +9,7 @@ A workspace is an ordinary SQLite database with:
 
 ```sql
 PRAGMA application_id = 0x56524143; -- `VRAC`
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 ```
 
 [`crates/vrac/schema.sql`](crates/vrac/schema.sql) is the executable schema.
@@ -49,6 +49,11 @@ source. Multiple references, self-references, and reference cycles are valid.
 Reads resolve the target's current plain text without recursively resolving
 references in that text. Deleting a source cascades its properties; deleting a
 target referenced from outside the deleted subtree is rejected atomically.
+Complete unbound `[[labels]]` are materialized in the same mutation: an exact
+root label is reused, an ISO date resolves to its Journal day, and any other
+missing label creates an ordinary root concept. Removing the final reference,
+including by deleting its source subtree, deletes such a root when it has no
+tag, child, outgoing reference, or other incoming reference.
 
 Contextual backlinks are a derived read over these canonical relations. A
 direct reference defines a downward scope; an optional canonical tag selects
@@ -131,6 +136,10 @@ node inserts, text updates, and deletions into the index.
 
 The FTS table and its shadow tables are local derived data. They are excluded
 from synchronization and may be rebuilt from canonical node text.
+
+`nodes_by_root_text(text, position, id)` is a partial index over ordinary and
+system roots. It supports deterministic exact concept reuse without scanning
+millions of nodes.
 
 ## Durability and checkpoints
 

@@ -109,8 +109,44 @@ fn new_databases_have_stable_format_markers_and_wal() {
         .expect("read journal mode");
 
     assert_eq!(application_id, VRAC_APPLICATION_ID);
-    assert_eq!(schema_version, 2);
+    assert_eq!(schema_version, 3);
     assert_eq!(journal_mode, "wal");
+}
+
+#[test]
+fn version_two_workspaces_add_the_root_concept_index_without_losing_data() {
+    let database = TestDatabase::new();
+    let mut engine = Engine::open(database.path()).expect("open database");
+    let node = engine
+        .create_node(CreateNode::new("Preserved"))
+        .expect("create node");
+    drop(engine);
+
+    let connection = Connection::open(database.path()).expect("open raw SQLite database");
+    connection
+        .execute("DROP INDEX nodes_by_root_text", [])
+        .expect("restore version two schema");
+    connection
+        .pragma_update(None, "user_version", 2)
+        .expect("mark version two");
+    drop(connection);
+
+    let engine = Engine::open(database.path()).expect("migrate workspace");
+    assert_eq!(engine.node(node.id).unwrap().unwrap().text, "Preserved");
+    drop(engine);
+    let connection = Connection::open(database.path()).expect("inspect migration");
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("read schema version");
+    let index_exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'nodes_by_root_text')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read root concept index");
+    assert_eq!(version, 3);
+    assert!(index_exists);
 }
 
 #[test]

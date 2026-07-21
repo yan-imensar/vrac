@@ -24,30 +24,39 @@ impl Engine {
                 .ok_or_else(|| Error::InvalidDatabase("a journal day could not be read".into()));
         }
 
-        let journal_id = journal_id(&self.connection)?;
         let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
-        let position =
-            position_for_placement(&transaction, Some(journal_id), Placement::Last, None)?;
-        let id = random_node_id(&transaction)?;
-        transaction.execute(
-            "INSERT INTO nodes (id, parent_id, position, text, system_key)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                node_id_bytes(&id),
-                node_id_bytes(&journal_id),
-                position,
-                date,
-                key
-            ],
-        )?;
-        replace_tags(&transaction, id, &["journal".into()])?;
+        let (id, _) = ensure_journal_day(&transaction, date)?;
         commit_mutation(transaction, captured, self.sync_device_id)?;
         self.history.clear();
         self.node(id)?.ok_or_else(|| {
             Error::InvalidDatabase("a newly created journal day could not be read".into())
         })
     }
+}
+
+pub(crate) fn ensure_journal_day(connection: &Connection, date: &str) -> Result<(NodeId, bool)> {
+    validate_date(date)?;
+    let key = format!("{JOURNAL_DAY_PREFIX}{date}");
+    if let Some(id) = system_node_id(connection, &key)? {
+        return Ok((id, false));
+    }
+    let journal_id = journal_id(connection)?;
+    let position = position_for_placement(connection, Some(journal_id), Placement::Last, None)?;
+    let id = random_node_id(connection)?;
+    connection.execute(
+        "INSERT INTO nodes (id, parent_id, position, text, system_key)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            node_id_bytes(&id),
+            node_id_bytes(&journal_id),
+            position,
+            date,
+            key
+        ],
+    )?;
+    replace_tags(connection, id, &["journal".into()])?;
+    Ok((id, true))
 }
 
 pub(crate) fn create_journal(connection: &Connection) -> Result<()> {

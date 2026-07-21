@@ -287,6 +287,26 @@ pub struct NodeReference {
     pub target_text: String,
 }
 
+/// Result of atomically replacing a node's text and references.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContentUpdate {
+    /// Complete resolved references now stored on the edited node.
+    pub references: Vec<NodeReference>,
+    /// Concept or Journal nodes created from previously unresolved `[[labels]]`.
+    pub materialized_nodes: Vec<Node>,
+    /// Empty ordinary roots removed after their final reference disappeared.
+    pub pruned_roots: Vec<NodeId>,
+}
+
+/// Result of deleting a requested subtree and cleaning detached empty roots.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeleteOutcome {
+    /// Number of nodes in the explicitly deleted subtree.
+    pub deleted_nodes: u64,
+    /// Empty ordinary roots removed after losing references from that subtree.
+    pub pruned_roots: Vec<NodeId>,
+}
+
 /// One inline reference supplied while creating or editing content.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReferenceInput {

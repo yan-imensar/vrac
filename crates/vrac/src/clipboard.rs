@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::content::{canonicalize_tags, hydrate_nodes, replace_tags};
+use crate::content::{
+    canonicalize_tags, hydrate_nodes, materialize_references, push_history_step,
+    replace_references, replace_tags,
+};
 use crate::db::Engine;
 use crate::journal::journal_container;
 use crate::nodes::{
@@ -127,22 +130,25 @@ impl Engine {
             let position = position_for_placement(&transaction, parent_id, placement, None)?;
             let id = random_node_id(&transaction)?;
             let parent_bytes = parent_id.as_ref().map(node_id_bytes);
-            let mut node_step = capture_session(&transaction)?;
+            let node_step = capture_session(&transaction)?;
             transaction.execute(
                 "INSERT INTO nodes (id, parent_id, position, text) VALUES (?1, ?2, ?3, ?4)",
-                params![node_id_bytes(&id), parent_bytes, position, item.text],
+                params![node_id_bytes(&id), parent_bytes, position, &item.text],
             )?;
-            let mut node_changeset = Vec::new();
-            node_step.changeset_strm(&mut node_changeset)?;
-            history.push(node_changeset);
+            push_history_step(node_step, &mut history)?;
+
+            let materialize_step = capture_session(&transaction)?;
+            let (references, _) = materialize_references(&transaction, &item.text, Vec::new())?;
+            push_history_step(materialize_step, &mut history)?;
+            let reference_step = capture_session(&transaction)?;
+            replace_references(&transaction, id, &references)?;
+            push_history_step(reference_step, &mut history)?;
 
             let tags = canonicalize_tags(item.tags)?;
             if !tags.is_empty() {
-                let mut tag_step = capture_session(&transaction)?;
+                let tag_step = capture_session(&transaction)?;
                 replace_tags(&transaction, id, &tags)?;
-                let mut tag_changeset = Vec::new();
-                tag_step.changeset_strm(&mut tag_changeset)?;
-                history.push(tag_changeset);
+                push_history_step(tag_step, &mut history)?;
             }
             if item.depth == 0 {
                 roots.push(id);

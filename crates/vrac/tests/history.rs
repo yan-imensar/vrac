@@ -200,8 +200,11 @@ fn deleting_referenced_content_can_be_redone_and_synchronized() {
         .expect("bootstrap second device");
     let mut second = Engine::open_synced(&second_path, device(2)).expect("open second device");
 
-    first.delete_node(source.id).expect("delete source");
+    let deleted = first.delete_node(source.id).expect("delete source");
+    assert_eq!(deleted.pruned_roots, [target.id]);
+    assert!(first.node(target.id).unwrap().is_none());
     assert!(first.undo().expect("undo deletion"));
+    assert!(first.node(target.id).unwrap().is_some());
     assert!(first.redo().expect("redo deletion"));
     let package = flush(&mut first);
     assert_eq!(
@@ -209,5 +212,59 @@ fn deleting_referenced_content_can_be_redone_and_synchronized() {
         SyncApply::Applied
     );
     assert!(second.node(source.id).unwrap().is_none());
-    assert!(second.node(target.id).unwrap().is_some());
+    assert!(second.node(target.id).unwrap().is_none());
+}
+
+#[test]
+fn pruning_a_detached_root_can_be_undone_redone_and_synchronized() {
+    let directory = tempdir().expect("create temporary directory");
+    let first_path = directory.path().join("first.vrac");
+    let second_path = directory.path().join("second.vrac");
+    let mut first = Engine::open_synced(&first_path, device(1)).expect("open first device");
+    let target = first
+        .create_node(CreateNode::new("Target"))
+        .expect("create target");
+    let text = "See [[Target]]";
+    let mut source = CreateNode::new(text);
+    source.references.push(ReferenceInput {
+        label_start: 6,
+        label_end: 12,
+        target_id: target.id,
+    });
+    let source = first.create_node(source).expect("create source");
+    flush(&mut first);
+    first
+        .checkpoint(&second_path)
+        .expect("bootstrap second device");
+    let mut second = Engine::open_synced(&second_path, device(2)).expect("open second device");
+
+    assert_eq!(
+        first
+            .set_content(source.id, "Detached".into(), Vec::new())
+            .expect("detach target"),
+        vrac::ContentUpdate {
+            references: Vec::new(),
+            materialized_nodes: Vec::new(),
+            pruned_roots: vec![target.id],
+        }
+    );
+    assert!(first.node(target.id).unwrap().is_none());
+    assert!(first.undo().expect("undo prune"));
+    assert_eq!(
+        first.node(source.id).unwrap().unwrap().references[0].target_id,
+        target.id
+    );
+    assert!(first.node(target.id).unwrap().is_some());
+    assert!(first.redo().expect("redo prune"));
+    assert!(first.node(target.id).unwrap().is_none());
+
+    let package = flush(&mut first);
+    assert_eq!(
+        second.apply_sync_package(&package).expect("apply prune"),
+        SyncApply::Applied
+    );
+    assert!(second.node(target.id).unwrap().is_none());
+    let synchronized = second.node(source.id).unwrap().unwrap();
+    assert_eq!(synchronized.text, "Detached");
+    assert!(synchronized.references.is_empty());
 }

@@ -84,6 +84,39 @@ fn pasted_outline_is_one_atomic_hierarchical_mutation() {
 }
 
 #[test]
+fn pasted_reference_syntax_materializes_and_reuses_concepts() {
+    let mut engine = Engine::open(":memory:").expect("open engine");
+    let existing = create(&mut engine, None, "Existing", &[]);
+
+    let roots = engine
+        .paste_nodes(
+            Destination {
+                parent_id: None,
+                placement: Placement::Last,
+            },
+            "- See [[Existing]] and [[New concept]]\n  - Again [[New concept]]",
+        )
+        .expect("paste references");
+
+    assert_eq!(roots[0].references.len(), 2);
+    assert_eq!(roots[0].references[0].target_id, existing.id);
+    let concept_id = roots[0].references[1].target_id;
+    assert_eq!(
+        engine.node(concept_id).unwrap().unwrap().text,
+        "New concept"
+    );
+    let child = engine
+        .children(Some(roots[0].id), Page::default())
+        .unwrap()
+        .nodes
+        .remove(0);
+    assert_eq!(child.references[0].target_id, concept_id);
+
+    assert!(engine.undo().expect("undo paste"));
+    assert!(engine.node(concept_id).unwrap().is_none());
+}
+
+#[test]
 fn malformed_indentation_creates_nothing() {
     let mut engine = Engine::open(":memory:").expect("open engine");
     let before = engine.children(None, Page::default()).unwrap().nodes.len();
