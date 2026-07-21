@@ -201,7 +201,9 @@ opens on today's protected Journal node. Journal days are visible nodes tagged
 `journal`, so they can be referenced normally;
 typing a missing ISO date such as `[[2026-07-22]]` creates that day below
 Journal. Root navigation is hidden by default and can be enabled for the
-current session with `:root on`, then hidden again with `:root off`. Typing
+current session with `:root on`, then hidden again with `:root off`.
+Hierarchy guides are visible by default and can be hidden for the current
+session with `:lines off`, then restored with `:lines on`. Typing
 `[[` searches other reference targets and offers a new root node when no
 matching target exists. Typing `#` lists canonical tags and can apply a
 new one without storing the marker in node text. A central, optional Vim
