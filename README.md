@@ -192,7 +192,7 @@ only converts command inputs and outputs. `Cursor` implements text conversion
 as an opaque token that can cross IPC unchanged and be parsed for the next page.
 The token is temporary continuation state, not workspace data.
 
-The interface implements the dark outline surface, lazy branch expansion,
+The interface implements the outline surface, lazy branch expansion,
 text editing, focused zoom, bounded pagination, node search, deletion, and
 indentation. Long text wraps in both display and editing while the bullet and
 disclosure remain aligned with the first line. Display and editing share the
@@ -203,7 +203,9 @@ typing a missing ISO date such as `[[2026-07-22]]` creates that day below
 Journal. Root navigation is hidden by default and can be enabled for the
 current session with `:root on`, then hidden again with `:root off`.
 Hierarchy guides are visible by default and can be hidden for the current
-session with `:lines off`, then restored with `:lines on`. Typing
+session with `:lines off`, then restored with `:lines on`. The dark theme is
+the default; `:light` and `:dark` switch the complete interface palette for the
+current session. Typing
 `[[` searches other reference targets and offers a new root node when no
 matching target exists. Typing `#` lists canonical tags and can apply a
 new one without storing the marker in node text. A central, optional Vim
