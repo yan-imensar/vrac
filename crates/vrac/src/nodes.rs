@@ -38,45 +38,9 @@ impl Engine {
     /// The parent and any relative placement reference are validated inside
     /// the same transaction as the insertion.
     pub fn create_node(&mut self, input: CreateNode) -> Result<Node> {
-        let CreateNode {
-            parent_id,
-            placement,
-            text,
-            tags,
-            references,
-        } = input;
-        let tags = canonicalize_tags(tags)?;
-
         let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
-        ensure_parent_exists(&transaction, parent_id)?;
-        if let Some(parent_id) = parent_id
-            && journal_container(&transaction, parent_id)?
-        {
-            return Err(Error::SystemNodeProtected(parent_id));
-        }
-
-        let position = position_for_placement(&transaction, parent_id, placement, None)?;
-        let id = random_node_id(&transaction)?;
-        let parent_bytes = parent_id.as_ref().map(node_id_bytes);
-
-        let mut history = Vec::new();
-        let node_step = capture_session(&transaction)?;
-        transaction.execute(
-            "INSERT INTO nodes (id, parent_id, position, text) VALUES (?1, ?2, ?3, ?4)",
-            params![node_id_bytes(&id), parent_bytes, position, &text],
-        )?;
-        push_history_step(node_step, &mut history)?;
-        let references = validate_references(&transaction, &text, references)?;
-        let materialize_step = capture_session(&transaction)?;
-        let (references, _) = materialize_references(&transaction, &text, references)?;
-        push_history_step(materialize_step, &mut history)?;
-        let tag_step = capture_session(&transaction)?;
-        replace_tags(&transaction, id, &tags)?;
-        push_history_step(tag_step, &mut history)?;
-        let reference_step = capture_session(&transaction)?;
-        replace_references(&transaction, id, &references)?;
-        push_history_step(reference_step, &mut history)?;
+        let (id, history) = create_node_in_transaction(&transaction, input)?;
         let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
         if changeset.is_some() {
             self.history.record_group(history);
@@ -577,6 +541,49 @@ impl Engine {
         self.history.clear();
         Ok(())
     }
+}
+
+pub(crate) fn create_node_in_transaction(
+    connection: &Connection,
+    input: CreateNode,
+) -> Result<(NodeId, Vec<Vec<u8>>)> {
+    let CreateNode {
+        parent_id,
+        placement,
+        text,
+        tags,
+        references,
+    } = input;
+    let tags = canonicalize_tags(tags)?;
+    ensure_parent_exists(connection, parent_id)?;
+    if let Some(parent_id) = parent_id
+        && journal_container(connection, parent_id)?
+    {
+        return Err(Error::SystemNodeProtected(parent_id));
+    }
+
+    let position = position_for_placement(connection, parent_id, placement, None)?;
+    let id = random_node_id(connection)?;
+    let parent_bytes = parent_id.as_ref().map(node_id_bytes);
+
+    let mut history = Vec::new();
+    let node_step = capture_session(connection)?;
+    connection.execute(
+        "INSERT INTO nodes (id, parent_id, position, text) VALUES (?1, ?2, ?3, ?4)",
+        params![node_id_bytes(&id), parent_bytes, position, &text],
+    )?;
+    push_history_step(node_step, &mut history)?;
+    let references = validate_references(connection, &text, references)?;
+    let materialize_step = capture_session(connection)?;
+    let (references, _) = materialize_references(connection, &text, references)?;
+    push_history_step(materialize_step, &mut history)?;
+    let tag_step = capture_session(connection)?;
+    replace_tags(connection, id, &tags)?;
+    push_history_step(tag_step, &mut history)?;
+    let reference_step = capture_session(connection)?;
+    replace_references(connection, id, &references)?;
+    push_history_step(reference_step, &mut history)?;
+    Ok((id, history))
 }
 
 pub(crate) fn raw_node(row: &Row<'_>) -> rusqlite::Result<RawNode> {

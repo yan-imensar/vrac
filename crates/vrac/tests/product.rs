@@ -167,6 +167,77 @@ fn new_journal_days_stay_first_after_reopening() {
 }
 
 #[test]
+fn journal_capture_creates_one_ordinary_last_child_atomically() {
+    let mut engine = Engine::open(":memory:").expect("open engine");
+    let day = engine.journal_day("2026-07-21").expect("create day");
+    let earlier = create_child(&mut engine, day.id, "Earlier");
+
+    let captured = engine
+        .capture_journal_entry("2026-07-21", "Call [[Alex]]")
+        .expect("capture entry");
+    let children = engine
+        .children(Some(day.id), Page::default())
+        .expect("read Journal entries");
+
+    assert_eq!(children.nodes.len(), 2);
+    assert_eq!(children.nodes[0].id, earlier.id);
+    assert_eq!(children.nodes[1].id, captured.id);
+    assert_eq!(captured.parent_id, Some(day.id));
+    assert_eq!(captured.references.len(), 1);
+    assert_eq!(captured.references[0].target_text, "Alex");
+    assert!(engine.undo().expect("undo capture"));
+    assert!(engine.node(captured.id).unwrap().is_none());
+    assert!(engine.node(day.id).unwrap().is_some());
+}
+
+#[test]
+fn journal_capture_creates_a_missing_day_without_adding_it_to_undo() {
+    let mut engine = Engine::open(":memory:").expect("open engine");
+    let captured = engine
+        .capture_journal_entry("2026-07-22", "Captured on a new day")
+        .expect("capture entry");
+    let day = engine
+        .node(captured.parent_id.expect("capture has a day parent"))
+        .unwrap()
+        .expect("read created day");
+
+    assert_eq!(
+        day.system,
+        Some(SystemNode::JournalDay {
+            date: "2026-07-22".into()
+        })
+    );
+    assert!(engine.undo().expect("undo capture"));
+    assert!(engine.node(captured.id).unwrap().is_none());
+    assert!(engine.node(day.id).unwrap().is_some());
+}
+
+#[test]
+fn failed_journal_capture_leaves_no_partial_day_or_entry() {
+    let mut engine = Engine::open(":memory:").expect("open engine");
+    let journal = engine
+        .children(None, Page::default())
+        .unwrap()
+        .nodes
+        .into_iter()
+        .find(|node| node.system == Some(SystemNode::Journal))
+        .expect("Journal exists");
+
+    assert!(
+        engine
+            .capture_journal_entry("2026-07-22", "Invalid [[2026-02-31]]")
+            .is_err()
+    );
+    assert!(
+        engine
+            .children(Some(journal.id), Page::default())
+            .unwrap()
+            .nodes
+            .is_empty()
+    );
+}
+
+#[test]
 fn backlinks_inherit_reference_context_downward_and_filter_by_tag() {
     let mut engine = Engine::open(":memory:").expect("open database");
     let northstar = create(&mut engine, "Northstar");

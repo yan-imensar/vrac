@@ -2,10 +2,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::content::replace_tags;
 use crate::db::Engine;
-use crate::nodes::{decode_id, node_id_bytes, random_node_id};
+use crate::nodes::{create_node_in_transaction, decode_id, node_id_bytes, random_node_id};
 use crate::order::position_for_placement;
 use crate::sync::{capture_session, commit_mutation};
-use crate::{CheckIssue, Error, Node, NodeId, Placement, Result, SystemNode};
+use crate::{CheckIssue, CreateNode, Error, Node, NodeId, Placement, Result, SystemNode};
 
 const JOURNAL_KEY: &str = "journal";
 const JOURNAL_DAY_PREFIX: &str = "journal-day:";
@@ -31,6 +31,27 @@ impl Engine {
         self.history.discard_redo();
         self.node(id)?.ok_or_else(|| {
             Error::InvalidDatabase("a newly created journal day could not be read".into())
+        })
+    }
+
+    /// Captures one ordinary bullet at the end of a Journal day atomically.
+    ///
+    /// The day is created in the same transaction when it does not exist.
+    /// Complete unbound `[[references]]` use the ordinary node-creation rules.
+    pub fn capture_journal_entry(&mut self, date: &str, text: impl Into<String>) -> Result<Node> {
+        validate_date(date)?;
+        let captured = capture_session(&self.connection)?;
+        let transaction = self.connection.unchecked_transaction()?;
+        let (day_id, _) = ensure_journal_day(&transaction, date)?;
+        let mut input = CreateNode::new(text);
+        input.parent_id = Some(day_id);
+        let (id, history) = create_node_in_transaction(&transaction, input)?;
+        let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
+        if changeset.is_some() {
+            self.history.record_group(history);
+        }
+        self.node(id)?.ok_or_else(|| {
+            Error::InvalidDatabase("a newly captured Journal entry could not be read".into())
         })
     }
 }

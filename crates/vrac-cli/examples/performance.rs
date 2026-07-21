@@ -53,6 +53,13 @@ fn main() -> Result<(), Box<dyn StdError>> {
     if journal_day.tags != ["journal"] {
         return Err(IoError::other("the journal day is not tagged").into());
     }
+    let capture_p95 = measure_p95(|| {
+        std::hint::black_box(
+            engine.capture_journal_entry("2030-01-01", "Quick capture performance probe")?,
+        );
+        Ok(())
+    })?;
+    record_interactive("capture_journal_entry_p95", capture_p95)?;
 
     let started = Instant::now();
     let first_page = engine.children(

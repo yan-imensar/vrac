@@ -77,12 +77,14 @@ will receive device-level memory baselines before mobile release.
 ## Packaged product baseline
 
 The complete release app has its own reference-Mac gate in addition to the
-engine scenarios. The current macOS bundle is 6,812 KiB. The most recent
-complete runtime pass reached the first usable view in 0.65 seconds and used
-about 82 MiB of physical footprint across Vrac and its WebKit helpers. Its
-stress pass containing 100 creates, 100 persisted edits, and 20 complete
-100-row reloads used about 199 MiB and remained below the next 60 Hz paint at
-p95 for every measured interaction. Steady idle CPU was 0.1%.
+engine scenarios. The current macOS bundle is 7,088 KiB. The quick-capture
+runtime pass reached the first usable view in 0.68 seconds and used about
+78 MiB of physical footprint across Vrac and its WebKit helpers. Lazily creating
+and then hiding the capture WebView left about 101 MiB at idle, so ordinary
+startup does not pay for it. Combined idle CPU was 0.3%. The latest complete
+main-outline stress pass containing 100 creates, 100 persisted edits, and 20
+complete 100-row reloads used about 199 MiB and remained below the next 60 Hz
+paint at p95 for every measured interaction.
 
 The local gates are 8 MiB for the bundle, 1.5 seconds for startup, 96 MiB for
 the initial view, 224 MiB after the stress pass, and 1% idle CPU. These are
