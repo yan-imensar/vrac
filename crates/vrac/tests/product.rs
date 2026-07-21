@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 use vrac::{
-    CheckIssue, CreateNode, Destination, Engine, Error, Node, NodeId, Page, Placement,
-    ReferenceInput, SystemNode,
+    CheckIssue, CreateNode, Destination, Engine, Error, JournalEntry, Node, NodeId, Page,
+    Placement, ReferenceInput, SystemNode,
 };
 
 struct TestDatabase {
@@ -171,9 +171,15 @@ fn journal_capture_creates_one_ordinary_last_child_atomically() {
     let mut engine = Engine::open(":memory:").expect("open engine");
     let day = engine.journal_day("2026-07-21").expect("create day");
     let earlier = create_child(&mut engine, day.id, "Earlier");
+    let people = create(&mut engine, "People");
+    let alex = create_child(&mut engine, people.id, "Alex");
+    let text = "Call [[Alex]]";
+    let mut entry = JournalEntry::new(text);
+    entry.tags = vec!["Meeting".into(), "decision".into()];
+    entry.references = vec![reference(text, "Alex", alex.id)];
 
     let captured = engine
-        .capture_journal_entry("2026-07-21", "Call [[Alex]]")
+        .capture_journal_entry("2026-07-21", entry)
         .expect("capture entry");
     let children = engine
         .children(Some(day.id), Page::default())
@@ -183,7 +189,9 @@ fn journal_capture_creates_one_ordinary_last_child_atomically() {
     assert_eq!(children.nodes[0].id, earlier.id);
     assert_eq!(children.nodes[1].id, captured.id);
     assert_eq!(captured.parent_id, Some(day.id));
+    assert_eq!(captured.tags, ["decision", "meeting"]);
     assert_eq!(captured.references.len(), 1);
+    assert_eq!(captured.references[0].target_id, alex.id);
     assert_eq!(captured.references[0].target_text, "Alex");
     assert!(engine.undo().expect("undo capture"));
     assert!(engine.node(captured.id).unwrap().is_none());
@@ -194,7 +202,7 @@ fn journal_capture_creates_one_ordinary_last_child_atomically() {
 fn journal_capture_creates_a_missing_day_without_adding_it_to_undo() {
     let mut engine = Engine::open(":memory:").expect("open engine");
     let captured = engine
-        .capture_journal_entry("2026-07-22", "Captured on a new day")
+        .capture_journal_entry("2026-07-22", JournalEntry::new("Captured on a new day"))
         .expect("capture entry");
     let day = engine
         .node(captured.parent_id.expect("capture has a day parent"))
@@ -225,7 +233,7 @@ fn failed_journal_capture_leaves_no_partial_day_or_entry() {
 
     assert!(
         engine
-            .capture_journal_entry("2026-07-22", "Invalid [[2026-02-31]]")
+            .capture_journal_entry("2026-07-22", JournalEntry::new("Invalid [[2026-02-31]]"),)
             .is_err()
     );
     assert!(

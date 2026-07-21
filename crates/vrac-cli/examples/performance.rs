@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use vrac::{
-    CreateNode, Destination, Engine, GenerateShape, MAX_PAGE_SIZE, Page, Placement, ReferenceInput,
-    SyncDeviceId,
+    CreateNode, Destination, Engine, GenerateShape, JournalEntry, MAX_PAGE_SIZE, Page, Placement,
+    ReferenceInput, SyncDeviceId,
 };
 
 const DEFAULT_NODE_COUNT: u64 = 5_000_000;
@@ -54,9 +54,10 @@ fn main() -> Result<(), Box<dyn StdError>> {
         return Err(IoError::other("the journal day is not tagged").into());
     }
     let capture_p95 = measure_p95(|| {
-        std::hint::black_box(
-            engine.capture_journal_entry("2030-01-01", "Quick capture performance probe")?,
-        );
+        std::hint::black_box(engine.capture_journal_entry(
+            "2030-01-01",
+            JournalEntry::new("Quick capture performance probe"),
+        )?);
         Ok(())
     })?;
     record_interactive("capture_journal_entry_p95", capture_p95)?;

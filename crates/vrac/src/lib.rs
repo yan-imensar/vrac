@@ -349,6 +349,28 @@ impl CreateNode {
     }
 }
 
+/// Content captured as one ordinary bullet in a Journal day.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JournalEntry {
+    /// Plain node text.
+    pub text: String,
+    /// Tags for the captured node. They are canonicalized by the engine.
+    pub tags: Vec<String>,
+    /// Stable inline references already selected by the client.
+    pub references: Vec<ReferenceInput>,
+}
+
+impl JournalEntry {
+    /// Creates an untagged entry with no pre-resolved references.
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            tags: Vec::new(),
+            references: Vec::new(),
+        }
+    }
+}
+
 /// Destination of a move operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Destination {

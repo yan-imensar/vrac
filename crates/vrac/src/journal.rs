@@ -5,7 +5,9 @@ use crate::db::Engine;
 use crate::nodes::{create_node_in_transaction, decode_id, node_id_bytes, random_node_id};
 use crate::order::position_for_placement;
 use crate::sync::{capture_session, commit_mutation};
-use crate::{CheckIssue, CreateNode, Error, Node, NodeId, Placement, Result, SystemNode};
+use crate::{
+    CheckIssue, CreateNode, Error, JournalEntry, Node, NodeId, Placement, Result, SystemNode,
+};
 
 const JOURNAL_KEY: &str = "journal";
 const JOURNAL_DAY_PREFIX: &str = "journal-day:";
@@ -37,14 +39,17 @@ impl Engine {
     /// Captures one ordinary bullet at the end of a Journal day atomically.
     ///
     /// The day is created in the same transaction when it does not exist.
-    /// Complete unbound `[[references]]` use the ordinary node-creation rules.
-    pub fn capture_journal_entry(&mut self, date: &str, text: impl Into<String>) -> Result<Node> {
+    /// Tags, stable references, and complete unbound `[[references]]` use the
+    /// ordinary node-creation rules and commit with the entry and day.
+    pub fn capture_journal_entry(&mut self, date: &str, entry: JournalEntry) -> Result<Node> {
         validate_date(date)?;
         let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
         let (day_id, _) = ensure_journal_day(&transaction, date)?;
-        let mut input = CreateNode::new(text);
+        let mut input = CreateNode::new(entry.text);
         input.parent_id = Some(day_id);
+        input.tags = entry.tags;
+        input.references = entry.references;
         let (id, history) = create_node_in_transaction(&transaction, input)?;
         let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
         if changeset.is_some() {

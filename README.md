@@ -77,11 +77,13 @@ will receive device-level memory baselines before mobile release.
 ## Packaged product baseline
 
 The complete release app has its own reference-Mac gate in addition to the
-engine scenarios. The current macOS bundle is 7,088 KiB. The quick-capture
+engine scenarios. The current macOS bundle is 7,124 KiB. The quick-capture
 runtime pass reached the first usable view in 0.68 seconds and used about
-78 MiB of physical footprint across Vrac and its WebKit helpers. Lazily creating
-and then hiding the capture WebView left about 101 MiB at idle, so ordinary
-startup does not pay for it. Combined idle CPU was 0.3%. The latest complete
+81 MiB of physical footprint across Vrac and its WebKit helpers. Without
+AeroSpace, lazily creating and then hiding the capture WebView leaves about
+101 MiB at idle; with AeroSpace, dismissal destroys that WebView and the
+installed app returned to one main WebView at 81 MiB. Ordinary startup does not
+pay for capture in either case. Combined idle CPU was 0.3%. The latest complete
 main-outline stress pass containing 100 creates, 100 persisted edits, and 20
 complete 100-row reloads used about 199 MiB and remained below the next 60 Hz
 paint at p95 for every measured interaction.
@@ -235,6 +237,16 @@ match. Tags present in those contextual scopes appear immediately as clickable
 badges with their occurrence counts; unrelated workspace tags are omitted.
 Virtual lists, mobile controls, and maintenance commands remain outside this
 slice.
+
+`CmdOrCtrl+Shift+Space`, the tray icon, and `File > Quick Capture` open the
+same small Journal capture window without requiring the main outline. Its
+`[[` reference and `#` tag completion use the same bounded searches as the
+outline, and the resulting text, stable references, and tags commit in one
+engine transaction. On macOS the window moves to the active native Space. When
+AeroSpace is running, Vrac recreates the capture window on its currently
+focused workspace because AeroSpace does not provide sticky windows; the
+complete unsaved draft survives that recreation and remains scoped to its
+workspace. Other desktops keep and reuse the hidden capture WebView.
 
 The bottom Vim status control is the single notification surface. It briefly
 expands for manual synchronization results, recovery operations, and useful
