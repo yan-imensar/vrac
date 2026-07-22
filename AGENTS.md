@@ -157,6 +157,10 @@ run at least formatting, workspace tests, and compiler diagnostics. Add Clippy
 and relevant benchmarks when warranted. Clearly report any check that could not
 be run.
 
+Do not perform visual or manual UI inspection unless the user explicitly asks
+for it. Run the relevant automated checks and leave appearance validation to
+the user by default.
+
 ## Change discipline
 
 - Make the smallest complete change that satisfies the present need.
