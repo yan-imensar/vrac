@@ -278,8 +278,15 @@ enum LauncherItem {
     Node(Node),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PromptKind {
+    Search,
+    Commands,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Search {
+    kind: PromptKind,
     text: String,
     cursor: usize,
     items: Vec<LauncherItem>,
@@ -316,8 +323,9 @@ struct ReferencePrompt {
 }
 
 impl Search {
-    fn new() -> Self {
+    fn new(kind: PromptKind) -> Self {
         Self {
+            kind,
             text: String::new(),
             cursor: 0,
             items: Vec::new(),
@@ -657,7 +665,8 @@ impl App {
             KeyCode::Char(' ') => self.toggle_selected()?,
             KeyCode::Enter => self.zoom_selected()?,
             KeyCode::Backspace | KeyCode::Char('-') => self.zoom_out()?,
-            KeyCode::Char('/') | KeyCode::Char(':') => self.start_search()?,
+            KeyCode::Char('/') => self.start_search(PromptKind::Search)?,
+            KeyCode::Char(':') => self.start_search(PromptKind::Commands)?,
             KeyCode::Char('#') => self.start_tag_prompt()?,
             KeyCode::Char('b') => self.start_backlinks()?,
             KeyCode::Char('i') | KeyCode::Char('I') => self.start_edit_at_start(),
@@ -1037,34 +1046,37 @@ impl App {
         Ok(())
     }
 
-    fn start_search(&mut self) -> vrac::Result<()> {
-        self.search = Some(Search::new());
+    fn start_search(&mut self, kind: PromptKind) -> vrac::Result<()> {
+        self.search = Some(Search::new(kind));
         self.status.clear();
         self.scroll = 0;
         self.refresh_search()
     }
 
     fn refresh_search(&mut self) -> vrac::Result<()> {
-        let query = self.search.as_ref().expect("search is active").text.clone();
+        let search = self.search.as_ref().expect("search is active");
+        let kind = search.kind;
+        let query = search.text.clone();
         let normalized = query.trim().to_lowercase();
-        let mut items = COMMANDS
-            .iter()
-            .filter(|entry| {
-                normalized.is_empty()
-                    || entry.name.contains(&normalized)
-                    || entry.hint.contains(&normalized)
-            })
-            .copied()
-            .map(LauncherItem::Command)
-            .collect::<Vec<_>>();
-        if normalized.chars().count() >= 2 {
-            items.extend(
-                self.engine
-                    .search(&query, 20)?
-                    .into_iter()
-                    .map(LauncherItem::Node),
-            );
-        }
+        let items = match kind {
+            PromptKind::Commands => COMMANDS
+                .iter()
+                .filter(|entry| {
+                    normalized.is_empty()
+                        || entry.name.contains(&normalized)
+                        || entry.hint.contains(&normalized)
+                })
+                .copied()
+                .map(LauncherItem::Command)
+                .collect(),
+            PromptKind::Search if normalized.chars().count() >= 2 => self
+                .engine
+                .search(&query, 20)?
+                .into_iter()
+                .map(LauncherItem::Node)
+                .collect(),
+            PromptKind::Search => Vec::new(),
+        };
         let search = self.search.as_mut().expect("search is active");
         search.items = items;
         search.selected = 0;
@@ -1913,7 +1925,7 @@ mod tests {
         app.engine
             .set_text(parent.id, "Vrac concept".into())
             .unwrap();
-        app.start_search().unwrap();
+        app.start_search(PromptKind::Search).unwrap();
         for character in "vrac".chars() {
             app.search.as_mut().unwrap().insert(character);
         }
@@ -2154,22 +2166,37 @@ mod tests {
     }
 
     #[test]
-    fn slash_and_colon_open_the_same_launcher() {
+    fn slash_searches_nodes_and_colon_opens_commands() {
         let (mut app, _, _) = test_app();
 
         app.handle_normal_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
             .unwrap();
-        assert!(app.search.as_ref().unwrap().items.iter().any(
-            |item| matches!(item, LauncherItem::Command(entry) if entry.command == Command::New)
-        ));
+        assert_eq!(app.search.as_ref().unwrap().kind, PromptKind::Search);
+        assert!(
+            app.search
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .all(|item| matches!(item, LauncherItem::Node(_)))
+        );
         app.handle_search_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             .unwrap();
 
         app.handle_normal_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE))
             .unwrap();
+        assert_eq!(app.search.as_ref().unwrap().kind, PromptKind::Commands);
         assert!(app.search.as_ref().unwrap().items.iter().any(
             |item| matches!(item, LauncherItem::Command(entry) if entry.command == Command::New)
         ));
+        assert!(
+            app.search
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .all(|item| matches!(item, LauncherItem::Command(_)))
+        );
     }
 
     #[test]

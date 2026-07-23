@@ -9,8 +9,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vrac::{NodeId, Placement};
 
 use super::{
-    App, BacklinkView, EditTarget, Editor, LauncherItem, ReferencePrompt, Search, TagPrompt,
-    VisibleNode,
+    App, BacklinkView, EditTarget, Editor, LauncherItem, PromptKind, ReferencePrompt, Search,
+    TagPrompt, VisibleNode,
 };
 
 #[derive(Clone)]
@@ -264,8 +264,7 @@ fn draw_normal_footer(
         )?;
     }
     if height >= 1 {
-        let help =
-            "j/k h/l  Enter/-  / or : menu  # tag  b backlinks  i/a o/O c  Tab  yy/dd/p  u/^R  q";
+        let help = "j/k h/l  Enter/-  / search  : commands  # tag  b backlinks  i/a o/O c  Tab  yy/dd/p  u/^R  q";
         queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
@@ -286,7 +285,10 @@ fn draw_search_footer(
 ) -> io::Result<()> {
     if height >= 2 {
         let label = if status.is_empty() {
-            "MENU  ↑/↓ select · Enter run/open · Esc cancel"
+            match search.kind {
+                PromptKind::Search => "SEARCH  ↑/↓ select · Enter open · Esc cancel",
+                PromptKind::Commands => "COMMANDS  ↑/↓ select · Enter run · Esc cancel",
+            }
         } else {
             status
         };
@@ -305,7 +307,10 @@ fn draw_search_footer(
         queue!(
             stdout,
             SetForegroundColor(Color::Cyan),
-            Print("> "),
+            Print(match search.kind {
+                PromptKind::Search => "/ ",
+                PromptKind::Commands => ": ",
+            }),
             ResetColor
         )?;
         queue!(stdout, Print(fit(&view, input_width)), Show)?;
@@ -570,7 +575,11 @@ fn search_lines(search: &Search, width: usize) -> Vec<DisplayLine> {
         return vec![DisplayLine {
             selected: false,
             cursor: None,
-            text: "  No results".into(),
+            text: if search.kind == PromptKind::Search && search.text.trim().chars().count() < 2 {
+                "  Type at least two characters".into()
+            } else {
+                "  No results".into()
+            },
         }];
     }
     search
