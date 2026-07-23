@@ -660,6 +660,12 @@ impl App {
 
     fn reload_branch(&mut self, parent_id: Option<NodeId>) -> vrac::Result<()> {
         let page = self.engine.children(parent_id, Page::default())?;
+        for node in &page.nodes {
+            if !node.has_children {
+                self.expanded.remove(&node.id);
+                self.branches.remove(&Some(node.id));
+            }
+        }
         self.branches.insert(
             parent_id,
             Branch {
@@ -2092,6 +2098,10 @@ impl App {
                 }
             }
         }
+        if !updated.has_children {
+            self.expanded.remove(&updated.id);
+            self.branches.remove(&Some(updated.id));
+        }
     }
 
     fn start_new_child(&mut self) {
@@ -2592,6 +2602,27 @@ mod tests {
         assert!(!app.expanded.contains(&parent.id));
         app.toggle_selected().unwrap();
         assert!(app.expanded.contains(&parent.id));
+    }
+
+    #[test]
+    fn removing_the_last_child_clears_parent_expansion_state() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
+        let mut child_input = CreateNode::new("Child");
+        child_input.parent_id = Some(parent.id);
+        let child = engine.create_node(child_input).unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.expand(parent.id).unwrap();
+        assert!(app.expanded.contains(&parent.id));
+
+        app.engine.delete_node(child.id).unwrap();
+        app.reload_branch(Some(parent.id)).unwrap();
+        app.refresh_cached_node(parent.id).unwrap();
+
+        app.selected = Some(parent.id);
+        assert!(!app.selected_node().unwrap().has_children);
+        assert!(!app.expanded.contains(&parent.id));
+        assert!(!app.branches.contains_key(&Some(parent.id)));
     }
 
     #[test]
