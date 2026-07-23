@@ -12,6 +12,7 @@ The current SQLite workspace format is documented in [`FORMAT.md`](FORMAT.md).
 ```text
 crates/vrac       engine library, model, and SQLite storage
 crates/vrac-cli   CLI client, producing the `vrac` binary
+crates/vrac-tui   experimental keyboard-first terminal client
 src               minimal Svelte outliner
 src-tauri         thin Tauri client of the engine
 ```
@@ -32,6 +33,21 @@ Build the optimized CLI with:
 ```sh
 cargo build --release -p vrac-cli
 ```
+
+## Terminal prototype
+
+The experimental terminal outliner opens an ordinary local `.vrac` database
+through the public engine API:
+
+```sh
+cargo run -p vrac-tui -- /local/path/workspace.vrac
+```
+
+Use `j`/`k` to move, `h`/`l` to navigate the tree, `Space` to fold a branch,
+`i` to edit a plain node, `o` to create a sibling, `c` to create a child, and
+`q` to quit. Reads remain bounded to the first page of each opened branch. The
+prototype intentionally omits search, backlinks, reference-aware editing,
+clipboard commands, and configuration.
 
 ## Performance scenario
 

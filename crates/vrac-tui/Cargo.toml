@@ -1,0 +1,10 @@
+[package]
+name = "vrac-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+crossterm = "0.29.0"
+unicode-width = "0.2.2"
+vrac = { path = "../vrac" }
