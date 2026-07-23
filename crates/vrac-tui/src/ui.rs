@@ -4,7 +4,7 @@ use std::path::Path;
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::queue;
 use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
-use crossterm::terminal::{self, Clear, ClearType};
+use crossterm::terminal::{self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vrac::{NodeId, Placement};
 
@@ -18,18 +18,20 @@ pub(super) struct DisplayLine {
     pub(super) selected: bool,
     pub(super) text: String,
     pub(super) cursor: Option<usize>,
+    content_start: usize,
 }
 
 pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Result<()> {
     let (width, height) = terminal::size()?;
     let width = usize::from(width);
     let height = usize::from(height);
-    let body_height = height.saturating_sub(4);
-    let lines = match (&app.backlinks, &app.tag_prompt, &app.search) {
-        (Some(view), _, _) => backlink_lines(view, width),
-        (None, Some(prompt), _) => tag_lines(prompt, width),
-        (None, None, Some(search)) => search_lines(search, width),
-        (None, None, None) => display_lines(app, width),
+    app.viewport_width = width;
+    let completion_height = completion_height(app, height);
+    let body_height = height.saturating_sub(4 + completion_height);
+    let lines = match (&app.backlinks, &app.search) {
+        (Some(view), _) => backlink_lines(view, width),
+        (None, Some(search)) => search_lines(search, width),
+        (None, None) => display_lines(app, width),
     };
     let selected_start = lines
         .iter()
@@ -58,14 +60,20 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
     }
     app.scroll = app.scroll.min(lines.len().saturating_sub(body_height));
 
-    queue!(stdout, Hide, MoveTo(0, 0), Clear(ClearType::All))?;
+    queue!(
+        stdout,
+        BeginSynchronizedUpdate,
+        Hide,
+        MoveTo(0, 0),
+        Clear(ClearType::All)
+    )?;
     queue!(
         stdout,
         SetForegroundColor(Color::Cyan),
         SetAttribute(Attribute::Bold),
         Print(fit(
             &format!(
-                "Vrac TUI  {}",
+                "VRAC  {}",
                 path.file_name().map_or_else(
                     || path.display().to_string(),
                     |name| name.to_string_lossy().into()
@@ -78,24 +86,22 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
     )?;
     if height > 1 {
         queue!(stdout, MoveTo(0, 1), SetForegroundColor(Color::DarkGrey))?;
-        queue!(stdout, Print(fit(&app.focus_label(), width)), ResetColor)?;
+        queue!(
+            stdout,
+            Print(fit(&format!("  {}", app.focus_label()), width)),
+            ResetColor
+        )?;
+    }
+
+    if completion_height > 0 {
+        draw_completion_panel(stdout, app, width, 2 + body_height, completion_height)?;
     }
 
     let mut inline_cursor = None;
     for (offset, line) in lines.iter().skip(app.scroll).take(body_height).enumerate() {
         let row = offset + 2;
         queue!(stdout, MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX)))?;
-        if line.selected {
-            queue!(
-                stdout,
-                SetForegroundColor(Color::Cyan),
-                SetAttribute(Attribute::Bold)
-            )?;
-        }
-        queue!(stdout, Print(fit(&line.text, width)))?;
-        if line.selected {
-            queue!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
-        }
+        draw_display_line(stdout, line, width)?;
         if let Some(column) = line.cursor {
             inline_cursor = Some((column.min(width.saturating_sub(1)), row));
         }
@@ -134,7 +140,178 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
     } else {
         draw_normal_footer(stdout, &app.status, width, height)?;
     }
+    queue!(stdout, EndSynchronizedUpdate)?;
     stdout.flush()
+}
+
+fn draw_display_line(stdout: &mut Stdout, line: &DisplayLine, width: usize) -> io::Result<()> {
+    let fitted = fit(&line.text, width);
+    let (prefix, content) = split_content(&fitted, line.content_start);
+    queue!(
+        stdout,
+        SetForegroundColor(if line.selected {
+            Color::Cyan
+        } else {
+            Color::DarkGrey
+        }),
+        SetAttribute(if line.selected {
+            Attribute::Bold
+        } else {
+            Attribute::Reset
+        }),
+        Print(prefix),
+        SetAttribute(Attribute::Reset),
+        ResetColor
+    )?;
+    if line.selected {
+        queue!(stdout, SetAttribute(Attribute::Bold))?;
+    }
+    draw_inline_content(stdout, content)?;
+    queue!(stdout, SetAttribute(Attribute::Reset), ResetColor)
+}
+
+pub(super) fn split_content(text: &str, requested: usize) -> (&str, &str) {
+    let mut split = requested.min(text.len());
+    while !text.is_char_boundary(split) {
+        split -= 1;
+    }
+    text.split_at(split)
+}
+
+fn draw_inline_content(stdout: &mut Stdout, content: &str) -> io::Result<()> {
+    let mut offset = 0;
+    while offset < content.len() {
+        let remaining = &content[offset..];
+        if let Some(end) = remaining
+            .strip_prefix("[[")
+            .and_then(|label| label.find("]]").map(|end| end + 4))
+        {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Cyan),
+                Print(&remaining[..end]),
+                ResetColor
+            )?;
+            offset += end;
+            continue;
+        }
+        if remaining.starts_with('#')
+            && (offset == 0
+                || content[..offset]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_whitespace))
+        {
+            let end = remaining
+                .char_indices()
+                .skip(1)
+                .find(|(_, character)| character.is_whitespace())
+                .map_or(remaining.len(), |(index, _)| index);
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Magenta),
+                Print(&remaining[..end]),
+                ResetColor
+            )?;
+            offset += end;
+            continue;
+        }
+        let next = remaining
+            .char_indices()
+            .nth(1)
+            .map_or(remaining.len(), |(index, _)| index);
+        queue!(stdout, Print(&remaining[..next]))?;
+        offset += next;
+    }
+    Ok(())
+}
+
+fn completion_height(app: &App, height: usize) -> usize {
+    if app.tag_prompt.is_none() && app.reference_prompt.is_none() {
+        return 0;
+    }
+    6.min(height.saturating_sub(6))
+}
+
+fn draw_completion_panel(
+    stdout: &mut Stdout,
+    app: &App,
+    width: usize,
+    start: usize,
+    height: usize,
+) -> io::Result<()> {
+    if height == 0 {
+        return Ok(());
+    }
+    let (title, options, selected) = if let Some(prompt) = &app.tag_prompt {
+        (
+            "TAGS",
+            if prompt.results.is_empty() {
+                vec!["Type a tag".into()]
+            } else {
+                prompt.results.iter().map(|tag| format!("#{tag}")).collect()
+            },
+            prompt.selected,
+        )
+    } else if let Some(prompt) = &app.reference_prompt {
+        (
+            "REFERENCES",
+            if prompt.results.is_empty() {
+                if prompt.query.is_empty() {
+                    vec!["Type to search concepts".into()]
+                } else {
+                    vec![format!("Create [[{}]]", prompt.query)]
+                }
+            } else {
+                prompt
+                    .results
+                    .iter()
+                    .map(|node| node.text.replace('\n', " ↵ "))
+                    .collect()
+            },
+            prompt.selected,
+        )
+    } else {
+        return Ok(());
+    };
+    queue!(
+        stdout,
+        MoveTo(0, u16::try_from(start).unwrap_or(u16::MAX)),
+        SetForegroundColor(Color::DarkGrey),
+        Print(fit(&format!("  ── {title} "), width)),
+        ResetColor
+    )?;
+    let visible_options = height.saturating_sub(1);
+    let first = selected
+        .saturating_add(1)
+        .saturating_sub(visible_options)
+        .min(options.len().saturating_sub(visible_options));
+    for (offset, option) in options.iter().skip(first).take(visible_options).enumerate() {
+        let active = first + offset == selected;
+        queue!(
+            stdout,
+            MoveTo(0, u16::try_from(start + offset + 1).unwrap_or(u16::MAX))
+        )?;
+        if active {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Cyan),
+                SetAttribute(Attribute::Bold)
+            )?;
+        } else {
+            queue!(stdout, SetForegroundColor(Color::DarkGrey))?;
+        }
+        queue!(
+            stdout,
+            Print(fit(
+                &format!("  {} {option}", if active { "›" } else { " " }),
+                width
+            )),
+            SetAttribute(Attribute::Reset),
+            ResetColor
+        )?;
+    }
+    Ok(())
 }
 
 fn draw_reference_footer(
@@ -157,8 +334,14 @@ fn draw_reference_footer(
     }
     if height >= 1 {
         let choice = prompt.results.get(prompt.selected).map_or_else(
-            || format!("Create [[{}]] on save", prompt.query),
-            |node| format!("[[{}]]", node.text.replace('\n', " ")),
+            || {
+                if prompt.query.is_empty() {
+                    "Type after [[ to search".into()
+                } else {
+                    format!("Enter creates [[{}]]", prompt.query)
+                }
+            },
+            |node| format!("Enter inserts [[{}]]", node.text.replace('\n', " ")),
         );
         queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
@@ -256,15 +439,26 @@ fn draw_normal_footer(
 ) -> io::Result<()> {
     if height >= 2 {
         queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
-        queue!(
-            stdout,
-            SetForegroundColor(Color::Yellow),
-            Print(fit(status, width)),
-            ResetColor
-        )?;
+        if status.is_empty() {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Cyan),
+                SetAttribute(Attribute::Bold),
+                Print(" NORMAL "),
+                SetAttribute(Attribute::Reset),
+                ResetColor
+            )?;
+        } else {
+            queue!(
+                stdout,
+                SetForegroundColor(Color::Yellow),
+                Print(fit(status, width)),
+                ResetColor
+            )?;
+        }
     }
     if height >= 1 {
-        let help = "j/k h/l  Enter/-  / search  : commands  # tag  b backlinks  i/a o/O c  Tab  yy/dd/p  u/^R  q";
+        let help = "j/k move  h/l tree  Enter zoom  i/a edit  o/O new  / search  : commands";
         queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
@@ -334,7 +528,7 @@ fn draw_editor_status(
 ) -> io::Result<()> {
     if height >= 2 {
         let label = if status.is_empty() {
-            "INSERT  Enter new sibling · Tab indent · Shift-Tab outdent"
+            " INSERT  Enter sibling · Tab/Shift-Tab depth · Ctrl-Enter zoom · Alt-Bksp word"
         } else {
             status
         };
@@ -352,7 +546,7 @@ fn draw_editor_status(
             stdout,
             SetForegroundColor(Color::DarkGrey),
             Print(fit(
-                "←/→ move caret  Home/End  Esc normal (changes are automatic)",
+                "arrows move · Alt-←/→ words · Home/End line · # tag · [[ ref · Esc normal",
                 width
             )),
             ResetColor
@@ -368,22 +562,22 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
             parent_id,
             placement,
         } => draft_position(&visible, app.focus, parent_id, placement)
-            .map(|(index, depth)| (index, depth, editor)),
+            .map(|(index, guides)| (index, guides, editor)),
         EditTarget::Existing(_) => None,
     });
     let mut lines = Vec::new();
     for index in 0..=visible.len() {
-        if let Some((draft_index, depth, editor)) = draft
-            && draft_index == index
+        if let Some((draft_index, guides, editor)) = &draft
+            && *draft_index == index
         {
-            lines.extend(editor_lines(editor, depth, width));
+            lines.extend(editor_lines(editor, guides, width));
         }
         let Some(item) = visible.get(index) else {
             continue;
         };
         let selected = app.selected == Some(item.node.id);
         let selector = if selected { "› " } else { "  " };
-        let indent = "  ".repeat(item.depth);
+        let indent = guide_prefix(&item.guides);
         let marker = if item.node.has_children {
             if app.expanded.contains(&item.node.id) {
                 "▾"
@@ -394,7 +588,7 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
             "•"
         };
         let prefix = format!("{selector}{indent}{marker} ");
-        let continuation = " ".repeat(UnicodeWidthStr::width(prefix.as_str()));
+        let continuation = format!("  {indent}  ");
         let available = width
             .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
             .max(1);
@@ -417,6 +611,7 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
                     cursor: cursor
                         .map(|column| UnicodeWidthStr::width(line_prefix.as_str()) + column),
                     text: format!("{line_prefix}{content}"),
+                    content_start: line_prefix.len(),
                 });
             }
         } else {
@@ -436,6 +631,11 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
                 lines.push(DisplayLine {
                     selected,
                     cursor: None,
+                    content_start: if line_index == 0 {
+                        prefix.len()
+                    } else {
+                        continuation.len()
+                    },
                     text: format!(
                         "{}{}",
                         if line_index == 0 {
@@ -449,6 +649,20 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
             }
         }
     }
+    if lines.is_empty() {
+        lines.push(DisplayLine {
+            selected: false,
+            text: "  No bullets yet".into(),
+            cursor: None,
+            content_start: 2,
+        });
+        lines.push(DisplayLine {
+            selected: false,
+            text: "  Press o to start writing".into(),
+            cursor: None,
+            content_start: 2,
+        });
+    }
     lines
 }
 
@@ -457,11 +671,11 @@ fn draft_position(
     focus: Option<NodeId>,
     parent_id: Option<NodeId>,
     placement: Placement,
-) -> Option<(usize, usize)> {
+) -> Option<(usize, Vec<bool>)> {
     match placement {
         Placement::Before(reference) => {
             let index = visible.iter().position(|item| item.node.id == reference)?;
-            Some((index, visible[index].depth))
+            Some((index, visible[index].guides.clone()))
         }
         Placement::After(reference) => {
             let index = visible.iter().position(|item| item.node.id == reference)?;
@@ -470,15 +684,17 @@ fn draft_position(
             while insertion < visible.len() && visible[insertion].depth > depth {
                 insertion += 1;
             }
-            Some((insertion, depth))
+            Some((insertion, visible[index].guides.clone()))
         }
-        Placement::First if parent_id == focus => Some((0, 0)),
+        Placement::First if parent_id == focus => Some((0, Vec::new())),
         Placement::First => {
             let parent = parent_id?;
             let index = visible.iter().position(|item| item.node.id == parent)?;
-            Some((index + 1, visible[index].depth + 1))
+            let mut guides = visible[index].guides.clone();
+            guides.push(visible[index].has_following);
+            Some((index + 1, guides))
         }
-        Placement::Last if parent_id == focus => Some((visible.len(), 0)),
+        Placement::Last if parent_id == focus => Some((visible.len(), Vec::new())),
         Placement::Last => {
             let parent = parent_id?;
             let index = visible.iter().position(|item| item.node.id == parent)?;
@@ -487,14 +703,17 @@ fn draft_position(
             while insertion < visible.len() && visible[insertion].depth > depth {
                 insertion += 1;
             }
-            Some((insertion, depth + 1))
+            let mut guides = visible[index].guides.clone();
+            guides.push(visible[index].has_following);
+            Some((insertion, guides))
         }
     }
 }
 
-fn editor_lines(editor: &Editor, depth: usize, width: usize) -> Vec<DisplayLine> {
-    let prefix = format!("› {}• ", "  ".repeat(depth));
-    let continuation = " ".repeat(UnicodeWidthStr::width(prefix.as_str()));
+fn editor_lines(editor: &Editor, guides: &[bool], width: usize) -> Vec<DisplayLine> {
+    let indent = guide_prefix(guides);
+    let prefix = format!("› {indent}• ");
+    let continuation = format!("  {indent}  ");
     let available = width
         .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
         .max(1);
@@ -507,8 +726,16 @@ fn editor_lines(editor: &Editor, depth: usize, width: usize) -> Vec<DisplayLine>
                 selected: true,
                 cursor: cursor.map(|column| UnicodeWidthStr::width(line_prefix.as_str()) + column),
                 text: format!("{line_prefix}{content}"),
+                content_start: line_prefix.len(),
             }
         })
+        .collect()
+}
+
+fn guide_prefix(guides: &[bool]) -> String {
+    guides
+        .iter()
+        .map(|visible| if *visible { "│ " } else { "  " })
         .collect()
 }
 
@@ -575,6 +802,7 @@ fn search_lines(search: &Search, width: usize) -> Vec<DisplayLine> {
         return vec![DisplayLine {
             selected: false,
             cursor: None,
+            content_start: 2,
             text: if search.kind == PromptKind::Search && search.text.trim().chars().count() < 2 {
                 "  Type at least two characters".into()
             } else {
@@ -609,36 +837,11 @@ fn search_lines(search: &Search, width: usize) -> Vec<DisplayLine> {
             DisplayLine {
                 selected,
                 cursor: None,
+                content_start: if selected { "› ".len() } else { 2 },
                 text: fit(
                     &format!("{}{text}", if selected { "› " } else { "  " }),
                     width,
                 ),
-            }
-        })
-        .collect()
-}
-
-fn tag_lines(prompt: &TagPrompt, width: usize) -> Vec<DisplayLine> {
-    if prompt.results.is_empty() {
-        return vec![DisplayLine {
-            selected: false,
-            text: "  Type a tag".into(),
-            cursor: None,
-        }];
-    }
-    prompt
-        .results
-        .iter()
-        .enumerate()
-        .map(|(index, tag)| {
-            let selected = index == prompt.selected;
-            DisplayLine {
-                selected,
-                text: fit(
-                    &format!("{}#{}", if selected { "› " } else { "  " }, tag),
-                    width,
-                ),
-                cursor: None,
             }
         })
         .collect()
@@ -650,6 +853,7 @@ fn backlink_lines(view: &BacklinkView, width: usize) -> Vec<DisplayLine> {
             selected: false,
             text: "  No backlinks".into(),
             cursor: None,
+            content_start: 2,
         }];
     }
     view.contexts
@@ -669,6 +873,7 @@ fn backlink_lines(view: &BacklinkView, width: usize) -> Vec<DisplayLine> {
                     width,
                 ),
                 cursor: None,
+                content_start: if selected { "› ".len() } else { 2 },
             }
         })
         .collect()

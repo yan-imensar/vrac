@@ -6,10 +6,14 @@ use std::process::ExitCode;
 
 use arboard::Clipboard;
 use crossterm::cursor::{Hide, Show};
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::style::{Attribute, ResetColor, SetAttribute};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use unicode_width::UnicodeWidthChar;
 use vrac::{
     CreateNode, Cursor, Destination, Engine, Node, NodeId, Page, Placement, ReferenceInput,
 };
@@ -18,7 +22,7 @@ mod ui;
 
 use ui::draw;
 #[cfg(test)]
-use ui::{display_lines, wrap_text};
+use ui::{display_lines, split_content, wrap_text};
 
 const USAGE: &str = "Usage: vrac-tui <workspace.vrac>";
 
@@ -57,6 +61,11 @@ fn run() -> Result<(), Box<dyn Error>> {
                 Ok(Action::Continue) => {}
                 Err(error) => app.status = error.to_string(),
             },
+            Event::Paste(text) => {
+                if let Err(error) = app.handle_paste(&text) {
+                    app.status = error.to_string();
+                }
+            }
             Event::Resize(_, _) => {}
             _ => continue,
         }
@@ -77,7 +86,7 @@ impl TerminalGuard {
     fn enter() -> io::Result<Self> {
         terminal::enable_raw_mode()?;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen, Hide) {
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, Hide) {
             let _ = terminal::disable_raw_mode();
             return Err(error);
         }
@@ -95,6 +104,7 @@ impl Drop for TerminalGuard {
             self.stdout,
             ResetColor,
             SetAttribute(Attribute::Reset),
+            DisableBracketedPaste,
             Show
         );
         let _ = execute!(self.stdout, LeaveAlternateScreen);
@@ -112,6 +122,8 @@ struct Branch {
 struct VisibleNode {
     node: Node,
     depth: usize,
+    guides: Vec<bool>,
+    has_following: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -359,6 +371,41 @@ impl Search {
     }
 }
 
+fn word_character(character: char) -> bool {
+    character.is_alphanumeric() || character == '_'
+}
+
+fn shown_width(character: char) -> usize {
+    UnicodeWidthChar::width(if character.is_control() {
+        '↵'
+    } else {
+        character
+    })
+    .unwrap_or(0)
+}
+
+fn caret_positions(text: &str, width: usize) -> Vec<(usize, usize)> {
+    let width = width.max(1);
+    let characters = text.chars().collect::<Vec<_>>();
+    let mut positions = Vec::with_capacity(characters.len() + 1);
+    let mut row = 0;
+    let mut column = 0;
+    for index in 0..=characters.len() {
+        let next_width = characters.get(index).copied().map(shown_width);
+        if column == width && column > 0
+            || next_width.is_some_and(|next| column > 0 && column + next > width)
+        {
+            row += 1;
+            column = 0;
+        }
+        positions.push((row, column));
+        if let Some(next_width) = next_width {
+            column += next_width;
+        }
+    }
+    positions
+}
+
 impl Editor {
     fn new(
         target: EditTarget,
@@ -420,6 +467,96 @@ impl Editor {
         self.text.replace_range(start..end, "");
     }
 
+    fn insert_text(&mut self, text: &str) {
+        for character in text.chars() {
+            self.insert(character);
+        }
+    }
+
+    fn move_word(&mut self, direction: isize) {
+        let characters = self.text.chars().collect::<Vec<_>>();
+        if direction < 0 {
+            while self.cursor > 0 && characters[self.cursor - 1].is_whitespace() {
+                self.cursor -= 1;
+            }
+            if self.cursor == 0 {
+                return;
+            }
+            let word = word_character(characters[self.cursor - 1]);
+            while self.cursor > 0
+                && !characters[self.cursor - 1].is_whitespace()
+                && word_character(characters[self.cursor - 1]) == word
+            {
+                self.cursor -= 1;
+            }
+        } else {
+            while self.cursor < characters.len() && characters[self.cursor].is_whitespace() {
+                self.cursor += 1;
+            }
+            if self.cursor == characters.len() {
+                return;
+            }
+            let word = word_character(characters[self.cursor]);
+            while self.cursor < characters.len()
+                && !characters[self.cursor].is_whitespace()
+                && word_character(characters[self.cursor]) == word
+            {
+                self.cursor += 1;
+            }
+        }
+    }
+
+    fn backspace_word(&mut self) {
+        let end = self.cursor;
+        self.move_word(-1);
+        let start = self.cursor;
+        if start == end {
+            return;
+        }
+        let start_byte = char_to_byte(&self.text, start);
+        let end_byte = char_to_byte(&self.text, end);
+        self.remove_range(start_byte, end_byte);
+        self.text.replace_range(start_byte..end_byte, "");
+    }
+
+    fn move_vertical(&mut self, direction: isize, width: usize) {
+        let positions = caret_positions(&self.text, width);
+        let (row, column) = positions[self.cursor];
+        let target_row = row.saturating_add_signed(direction);
+        if target_row == row {
+            return;
+        }
+        if let Some((index, _)) = positions
+            .iter()
+            .enumerate()
+            .filter(|(_, (candidate_row, _))| *candidate_row == target_row)
+            .min_by_key(|(index, (_, candidate_column))| {
+                (
+                    candidate_column.abs_diff(column),
+                    index.abs_diff(self.cursor),
+                )
+            })
+        {
+            self.cursor = index;
+        }
+    }
+
+    fn move_to_visual_edge(&mut self, end: bool, width: usize) {
+        let positions = caret_positions(&self.text, width);
+        let row = positions[self.cursor].0;
+        let mut candidates = positions
+            .iter()
+            .enumerate()
+            .filter(|(_, (candidate_row, _))| *candidate_row == row);
+        if let Some((index, _)) = if end {
+            candidates.next_back()
+        } else {
+            candidates.next()
+        } {
+            self.cursor = index;
+        }
+    }
+
     fn remove_range(&mut self, start: usize, end: usize) {
         let removed = end - start;
         self.references.retain_mut(|reference| {
@@ -452,6 +589,7 @@ struct App {
     pending_key: Option<char>,
     status: String,
     scroll: usize,
+    viewport_width: usize,
 }
 
 impl App {
@@ -477,6 +615,7 @@ impl App {
             pending_key: None,
             status: String::new(),
             scroll: 0,
+            viewport_width: 80,
         };
         app.reload_branch(focus)?;
         app.focus_path = match focus {
@@ -577,30 +716,44 @@ impl App {
         let Some(root) = self.branches.get(&self.focus) else {
             return Vec::new();
         };
+        let root_count = root.nodes.len();
+        let root_has_more = root.next.is_some();
         let mut stack: Vec<_> = root
             .nodes
             .iter()
-            .rev()
             .cloned()
-            .map(|node| (node, 0))
+            .enumerate()
+            .rev()
+            .map(|(index, node)| (node, 0, Vec::new(), index + 1 < root_count || root_has_more))
             .collect();
         let mut visible = Vec::new();
 
-        while let Some((node, depth)) = stack.pop() {
+        while let Some((node, depth, guides, has_following)) = stack.pop() {
             let id = node.id;
-            visible.push(VisibleNode { node, depth });
+            visible.push(VisibleNode {
+                node,
+                depth,
+                guides: guides.clone(),
+                has_following,
+            });
             if !self.expanded.contains(&id) {
                 continue;
             }
             if let Some(branch) = self.branches.get(&Some(id)) {
-                stack.extend(
-                    branch
-                        .nodes
-                        .iter()
-                        .rev()
-                        .cloned()
-                        .map(|child| (child, depth + 1)),
-                );
+                let child_count = branch.nodes.len();
+                let branch_has_more = branch.next.is_some();
+                let mut child_guides = guides;
+                child_guides.push(has_following);
+                stack.extend(branch.nodes.iter().cloned().enumerate().rev().map(
+                    |(index, child)| {
+                        (
+                            child,
+                            depth + 1,
+                            child_guides.clone(),
+                            index + 1 < child_count || branch_has_more,
+                        )
+                    },
+                ));
             }
         }
 
@@ -618,6 +771,7 @@ impl App {
 
     fn handle_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.finish_editor()?;
             return Ok(Action::Quit);
         }
         if self.reference_prompt.is_some() {
@@ -633,6 +787,36 @@ impl App {
         } else {
             self.handle_normal_key(key)
         }
+    }
+
+    fn handle_paste(&mut self, pasted: &str) -> vrac::Result<()> {
+        let pasted = pasted
+            .replace("\r\n", "\n")
+            .replace('\r', "\n")
+            .replace('\n', " ");
+        if let Some(prompt) = &mut self.reference_prompt {
+            self.editor
+                .as_mut()
+                .expect("reference completion edits a node")
+                .insert_text(&pasted);
+            prompt.query.push_str(&pasted);
+            self.refresh_reference_prompt()?;
+        } else if let Some(prompt) = &mut self.tag_prompt {
+            prompt.query.extend(
+                pasted
+                    .chars()
+                    .filter(|character| !character.is_whitespace() && *character != '#'),
+            );
+            self.refresh_tag_prompt()?;
+        } else if let Some(search) = &mut self.search {
+            for character in pasted.chars() {
+                search.insert(character);
+            }
+            self.refresh_search()?;
+        } else if let Some(editor) = &mut self.editor {
+            editor.insert_text(&pasted);
+        }
+        Ok(())
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
@@ -730,9 +914,9 @@ impl App {
                 self.refresh_search()?;
             }
             KeyCode::Char(character)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
                 self.search
                     .as_mut()
@@ -770,9 +954,9 @@ impl App {
                 self.refresh_tag_prompt()?;
             }
             KeyCode::Char(character)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
                 self.tag_prompt
                     .as_mut()
@@ -863,9 +1047,9 @@ impl App {
                 }
             }
             KeyCode::Char(character)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
                 self.editor
                     .as_mut()
@@ -884,30 +1068,99 @@ impl App {
     }
 
     fn handle_editor_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+        let editor_width = self.editor_width();
+        let word_modifier = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
         match key.code {
             KeyCode::Esc => self.finish_editor()?,
+            KeyCode::Enter
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+            {
+                self.zoom_from_editor()?
+            }
             KeyCode::Enter => self.create_sibling_from_editor()?,
             KeyCode::Tab => self.indent_editor()?,
             KeyCode::BackTab => self.outdent_editor()?,
+            KeyCode::Up => self
+                .editor
+                .as_mut()
+                .expect("editor is active")
+                .move_vertical(-1, editor_width),
+            KeyCode::Down => self
+                .editor
+                .as_mut()
+                .expect("editor is active")
+                .move_vertical(1, editor_width),
+            KeyCode::Left if word_modifier => self
+                .editor
+                .as_mut()
+                .expect("editor is active")
+                .move_word(-1),
             KeyCode::Left => {
                 let editor = self.editor.as_mut().expect("editor is active");
                 editor.cursor = editor.cursor.saturating_sub(1);
+            }
+            KeyCode::Right if word_modifier => {
+                self.editor.as_mut().expect("editor is active").move_word(1)
             }
             KeyCode::Right => {
                 let editor = self.editor.as_mut().expect("editor is active");
                 editor.cursor = (editor.cursor + 1).min(editor.text.chars().count());
             }
-            KeyCode::Home => self.editor.as_mut().expect("editor is active").cursor = 0,
-            KeyCode::End => {
+            KeyCode::Home
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+            {
+                self.editor.as_mut().expect("editor is active").cursor = 0
+            }
+            KeyCode::Home => self
+                .editor
+                .as_mut()
+                .expect("editor is active")
+                .move_to_visual_edge(false, editor_width),
+            KeyCode::End
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER) =>
+            {
                 let editor = self.editor.as_mut().expect("editor is active");
                 editor.cursor = editor.text.chars().count();
             }
+            KeyCode::End => self
+                .editor
+                .as_mut()
+                .expect("editor is active")
+                .move_to_visual_edge(true, editor_width),
+            KeyCode::Backspace if key.modifiers.contains(KeyModifiers::ALT) => self
+                .editor
+                .as_mut()
+                .expect("editor is active")
+                .backspace_word(),
             KeyCode::Backspace => self.editor.as_mut().expect("editor is active").backspace(),
             KeyCode::Delete => self.editor.as_mut().expect("editor is active").delete(),
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => self
+                .editor
+                .as_mut()
+                .expect("editor is active")
+                .backspace_word(),
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => self
+                .editor
+                .as_mut()
+                .expect("editor is active")
+                .move_to_visual_edge(false, editor_width),
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => self
+                .editor
+                .as_mut()
+                .expect("editor is active")
+                .move_to_visual_edge(true, editor_width),
             KeyCode::Char(character)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) =>
             {
                 if character == '#' {
                     let target = match self.editor.as_ref().expect("editor is active").target {
@@ -932,6 +1185,39 @@ impl App {
             _ => {}
         }
         Ok(Action::Continue)
+    }
+
+    fn editor_width(&self) -> usize {
+        let depth = match self.editor.as_ref().map(|editor| editor.target.clone()) {
+            Some(EditTarget::Existing(id)) => self
+                .visible_nodes()
+                .iter()
+                .find(|item| item.node.id == id)
+                .map_or(0, |item| item.depth),
+            Some(EditTarget::New {
+                parent_id,
+                placement,
+            }) => match placement {
+                Placement::Before(id) | Placement::After(id) => self
+                    .visible_nodes()
+                    .iter()
+                    .find(|item| item.node.id == id)
+                    .map_or(0, |item| item.depth),
+                Placement::First | Placement::Last if parent_id == self.focus => 0,
+                Placement::First | Placement::Last => parent_id
+                    .and_then(|id| {
+                        self.visible_nodes()
+                            .iter()
+                            .find(|item| item.node.id == id)
+                            .map(|item| item.depth + 1)
+                    })
+                    .unwrap_or(0),
+            },
+            None => 0,
+        };
+        self.viewport_width
+            .saturating_sub(4 + depth.saturating_mul(2))
+            .max(1)
     }
 
     fn move_selection(&mut self, direction: isize) -> vrac::Result<()> {
@@ -1427,6 +1713,20 @@ impl App {
         Ok(())
     }
 
+    fn zoom_from_editor(&mut self) -> vrac::Result<()> {
+        if self.editor.as_ref().is_some_and(|editor| {
+            matches!(editor.target, EditTarget::New { .. }) && editor.text.is_empty()
+        }) {
+            return Ok(());
+        }
+        if let Some(saved) = self.commit_editor()? {
+            self.selected = Some(saved.id);
+            self.set_focus(Some(saved.id))?;
+            self.status.clear();
+        }
+        Ok(())
+    }
+
     fn indent_editor(&mut self) -> vrac::Result<()> {
         if self.adjust_new_draft(true)? {
             return Ok(());
@@ -1844,6 +2144,65 @@ mod tests {
     }
 
     #[test]
+    fn styled_lines_never_split_inside_unicode_markers() {
+        assert_eq!(split_content("› item", "› ".len()), ("› ", "item"));
+        assert_eq!(split_content("› item", 2), ("", "› item"));
+    }
+
+    #[test]
+    fn editor_moves_by_visual_lines_and_words() {
+        let mut editor = Editor::new(
+            EditTarget::New {
+                parent_id: None,
+                placement: Placement::Last,
+            },
+            "alpha beta".into(),
+            Vec::new(),
+            Vec::new(),
+        );
+        editor.cursor = 9;
+        editor.move_vertical(-1, 5);
+        assert_eq!(editor.cursor, 4);
+        editor.move_vertical(1, 5);
+        assert_eq!(editor.cursor, 9);
+
+        editor.move_word(-1);
+        assert_eq!(editor.cursor, 6);
+        editor.backspace_word();
+        assert_eq!(editor.text, "beta");
+        assert_eq!(editor.cursor, 0);
+    }
+
+    #[test]
+    fn home_and_end_follow_the_wrapped_visual_line() {
+        let mut editor = Editor::new(
+            EditTarget::New {
+                parent_id: None,
+                placement: Placement::Last,
+            },
+            "abcdefghij".into(),
+            Vec::new(),
+            Vec::new(),
+        );
+        editor.cursor = 7;
+        editor.move_to_visual_edge(false, 4);
+        assert_eq!(editor.cursor, 4);
+        editor.move_to_visual_edge(true, 4);
+        assert_eq!(editor.cursor, 7);
+    }
+
+    #[test]
+    fn bracketed_paste_is_inserted_once_and_flattens_line_breaks() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_new_sibling();
+
+        app.handle_paste("first line\r\nsecond line").unwrap();
+
+        assert_eq!(app.editor.as_ref().unwrap().text, "first line second line");
+    }
+
+    #[test]
     fn held_navigation_keys_are_actionable() {
         assert!(actionable_key(KeyEventKind::Press));
         assert!(actionable_key(KeyEventKind::Repeat));
@@ -1878,6 +2237,32 @@ mod tests {
 
         app.move_left().unwrap();
         assert_eq!(app.selected, Some(parent.id));
+    }
+
+    #[test]
+    fn visible_nodes_record_only_continuing_ancestor_guides() {
+        let (mut app, parent, _) = test_app();
+        let following = app
+            .engine
+            .create_node(CreateNode::new("Following"))
+            .unwrap();
+        app.reload_branch(None).unwrap();
+        app.expand(parent.id).unwrap();
+
+        let visible = app.visible_nodes();
+        let child = visible
+            .iter()
+            .find(|item| item.node.parent_id == Some(parent.id))
+            .unwrap();
+        assert_eq!(child.guides, [true]);
+        assert!(
+            visible
+                .iter()
+                .find(|item| item.node.id == following.id)
+                .unwrap()
+                .guides
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2078,6 +2463,39 @@ mod tests {
             }
         );
         assert_eq!(app.selected, Some(parent.id));
+    }
+
+    #[test]
+    fn control_enter_persists_and_zooms_the_edited_node() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_edit();
+        app.editor.as_mut().unwrap().text = "Zoomed".into();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL))
+            .unwrap();
+
+        assert!(app.editor.is_none());
+        assert_eq!(app.focus, Some(parent.id));
+        assert_eq!(app.focus_label(), "root › Zoomed");
+    }
+
+    #[test]
+    fn control_c_persists_before_quitting() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_edit();
+        app.editor.as_mut().unwrap().text = "Safe quit".into();
+
+        let action = app
+            .handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL))
+            .unwrap();
+
+        assert_eq!(action, Action::Quit);
+        assert_eq!(
+            app.engine.node(parent.id).unwrap().unwrap().text,
+            "Safe quit"
+        );
     }
 
     #[test]

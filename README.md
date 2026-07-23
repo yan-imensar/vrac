@@ -50,7 +50,12 @@ child, `Space` to fold a branch, `Enter` to focus a node, and `-` to return.
 While editing, `Enter` persists the current text and immediately starts the
 next sibling, while `Tab` and `Shift-Tab` indent and outdent without leaving
 the inline editor. `Esc` returns to navigation with non-empty changes already
-persisted, so there is no separate save action. `u` and `Ctrl-R` undo and redo.
+persisted, so there is no separate save action. Up and down follow wrapped
+visual lines, Home and End stay on the current visual line, Alt-arrow moves by
+word, Alt-Backspace removes a word, and Ctrl-Enter persists and zooms into the
+edited bullet. Terminal paste is inserted once and line breaks are flattened
+inside the bullet. Ctrl-C also persists active work before quitting. `u` and
+`Ctrl-R` undo and redo.
 `yy`, `dd`, and `p` use the system clipboard and the engine's portable subtree
 format. `dd` copies successfully before deleting. Holding a movement key
 repeats it, and reaching the end of a loaded sibling page fetches the next page
@@ -59,7 +64,10 @@ automatically. Stable references survive ordinary text edits; edited complete
 paths and opens their matching nodes. While editing any existing or new bullet,
 `[[` opens stable-reference completion and `#` opens tag completion. Tags
 selected on a draft are created atomically with its text. Configuration remains
-future work.
+future work. Synchronized terminal updates prevent intermediate redraws from
+flashing. Tree guides show only continuing ancestor branches; structural
+prefixes, references, and tags have distinct visual treatments. Inline
+completion stays beside the outline instead of replacing it.
 
 ## Performance scenario
 
