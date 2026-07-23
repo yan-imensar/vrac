@@ -799,8 +799,14 @@ impl App {
                 .as_mut()
                 .expect("reference completion edits a node")
                 .insert_text(&pasted);
-            prompt.query.push_str(&pasted);
-            self.refresh_reference_prompt()?;
+            if let Some((query, _)) = pasted.split_once(']') {
+                prompt.query.push_str(query);
+                self.reference_prompt = None;
+                self.status.clear();
+            } else {
+                prompt.query.push_str(&pasted);
+                self.refresh_reference_prompt()?;
+            }
         } else if let Some(prompt) = &mut self.tag_prompt {
             prompt.query.extend(
                 pasted
@@ -936,7 +942,7 @@ impl App {
                 self.status.clear();
                 self.scroll = 0;
             }
-            KeyCode::Enter => self.commit_tag_prompt()?,
+            KeyCode::Enter | KeyCode::Tab => self.commit_tag_prompt()?,
             KeyCode::Up => {
                 let prompt = self.tag_prompt.as_mut().expect("tag prompt is active");
                 prompt.selected = prompt.selected.saturating_sub(1);
@@ -946,12 +952,21 @@ impl App {
                 prompt.selected = (prompt.selected + 1).min(prompt.results.len().saturating_sub(1));
             }
             KeyCode::Backspace => {
-                self.tag_prompt
-                    .as_mut()
-                    .expect("tag prompt is active")
-                    .query
-                    .pop();
-                self.refresh_tag_prompt()?;
+                let prompt = self.tag_prompt.as_mut().expect("tag prompt is active");
+                if prompt.query.is_empty() {
+                    self.tag_prompt = None;
+                    self.status.clear();
+                } else {
+                    prompt.query.pop();
+                    self.refresh_tag_prompt()?;
+                }
+            }
+            KeyCode::Char(' ') => {
+                self.tag_prompt = None;
+                if let Some(editor) = &mut self.editor {
+                    editor.insert(' ');
+                }
+                self.status.clear();
             }
             KeyCode::Char(character)
                 if !key.modifiers.intersects(
@@ -1009,7 +1024,7 @@ impl App {
                 self.reference_prompt = None;
                 self.status.clear();
             }
-            KeyCode::Enter => self.commit_reference_prompt(),
+            KeyCode::Enter | KeyCode::Tab => self.commit_reference_prompt(),
             KeyCode::Up => {
                 let prompt = self
                     .reference_prompt
@@ -1045,6 +1060,14 @@ impl App {
                         .pop();
                     self.refresh_reference_prompt()?;
                 }
+            }
+            KeyCode::Char(']') => {
+                self.editor
+                    .as_mut()
+                    .expect("reference completion edits a node")
+                    .insert(']');
+                self.reference_prompt = None;
+                self.status.clear();
             }
             KeyCode::Char(character)
                 if !key.modifiers.intersects(
@@ -2424,6 +2447,31 @@ mod tests {
     }
 
     #[test]
+    fn inline_tag_completion_has_natural_cancel_keys() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_new_sibling();
+        app.editor.as_mut().unwrap().text = "Draft".into();
+        app.editor.as_mut().unwrap().cursor = "Draft".chars().count();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE))
+            .unwrap();
+        app.handle_tag_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.tag_prompt.is_none());
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE))
+            .unwrap();
+        app.handle_tag_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE))
+            .unwrap();
+        app.handle_tag_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.tag_prompt.is_none());
+        assert_eq!(app.editor.as_ref().unwrap().text, "Draft ");
+        assert!(app.editor.as_ref().unwrap().tags.is_empty());
+    }
+
+    #[test]
     fn backlinks_open_the_matching_context() {
         let mut engine = Engine::open(":memory:").unwrap();
         let source = engine
@@ -2823,6 +2871,46 @@ mod tests {
         let updated = app.engine.node(source.id).unwrap().unwrap();
         assert_eq!(updated.text, "See [[Project]]");
         assert_eq!(updated.references[0].target_id, target.id);
+    }
+
+    #[test]
+    fn typing_or_pasting_closing_brackets_leaves_reference_completion() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let typed_source = engine.create_node(CreateNode::new("Typed ")).unwrap();
+        let pasted_source = engine.create_node(CreateNode::new("Pasted ")).unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
+
+        app.selected = Some(typed_source.id);
+        app.start_edit();
+        for character in "[[Typed concept]]".chars() {
+            let key = KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE);
+            if app.reference_prompt.is_some() {
+                app.handle_reference_key(key).unwrap();
+            } else {
+                app.handle_editor_key(key).unwrap();
+            }
+        }
+        assert!(app.reference_prompt.is_none());
+        assert_eq!(app.editor.as_ref().unwrap().text, "Typed [[Typed concept]]");
+        app.commit_editor().unwrap();
+
+        app.selected = Some(pasted_source.id);
+        app.start_edit();
+        app.handle_editor_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE))
+            .unwrap();
+        app.handle_editor_key(KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE))
+            .unwrap();
+        app.handle_paste("Pasted concept]] suffix").unwrap();
+        assert!(app.reference_prompt.is_none());
+        assert_eq!(
+            app.editor.as_ref().unwrap().text,
+            "Pasted [[Pasted concept]] suffix"
+        );
+        app.commit_editor().unwrap();
+
+        let roots = &app.branches[&None].nodes;
+        assert!(roots.iter().any(|node| node.text == "Typed concept"));
+        assert!(roots.iter().any(|node| node.text == "Pasted concept"));
     }
 
     #[test]

@@ -63,9 +63,10 @@ automatically. Stable references survive ordinary text edits; edited complete
 `[[labels]]` are resolved again by the engine, and loaded references immediately
 follow target renames. `b` lists contextual backlink paths and opens their
 matching nodes. While editing any existing or new bullet,
-`[[` opens stable-reference completion and `#` opens tag completion. Tags
-selected on a draft are created atomically with its text. Configuration remains
-future work. Synchronized terminal updates prevent intermediate redraws from
+`[[` opens stable-reference completion and `#` opens tag completion. Enter or
+Tab accepts a completion; typed or pasted closing brackets return directly to
+the outline editor. Tags selected on a draft are created atomically with its
+text. Configuration remains future work. Synchronized terminal updates prevent intermediate redraws from
 flashing. Tree guides show only continuing ancestor branches; structural
 prefixes, references, and tags have distinct visual treatments. Inline
 completion stays beside the outline instead of replacing it.

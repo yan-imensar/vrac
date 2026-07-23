@@ -340,7 +340,7 @@ fn draw_reference_footer(
             stdout,
             SetForegroundColor(Color::Yellow),
             Print(fit(
-                "REFERENCE  ↑/↓ select · Enter complete/create · Esc keep literal",
+                "REFERENCE  ↑/↓ select · Enter/Tab complete · ] or Esc keep literal",
                 width
             )),
             ResetColor
@@ -409,7 +409,7 @@ fn draw_tag_footer(
 ) -> io::Result<()> {
     if height >= 2 {
         let label = if status.is_empty() {
-            "TAG  ↑/↓ select · Enter toggle · Esc cancel"
+            "TAG  ↑/↓ select · Enter/Tab toggle · Space/Esc cancel"
         } else {
             status
         };
