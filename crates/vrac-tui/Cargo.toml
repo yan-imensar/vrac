@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 arboard = { version = "3.6.1", default-features = false }
 crossterm = "0.29.0"
+dirs = "6.0.0"
 jiff = "0.2.34"
 unicode-width = "0.2.2"
 vrac = { path = "../vrac" }

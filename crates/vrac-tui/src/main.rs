@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::ffi::OsString;
+use std::fs;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -24,7 +26,7 @@ use ui::draw;
 #[cfg(test)]
 use ui::{display_lines, draw_inline_content, split_content, wrap_text};
 
-const USAGE: &str = "Usage: vrac-tui <workspace.vrac>";
+const USAGE: &str = "Usage: vrac-tui [workspace.vrac]";
 
 fn main() -> ExitCode {
     match run() {
@@ -38,18 +40,32 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let mut arguments = std::env::args_os().skip(1);
-    let Some(argument) = arguments.next() else {
-        return Err(USAGE.into());
-    };
-    if argument == "--help" || argument == "-h" {
+    let argument = arguments.next();
+    if argument
+        .as_deref()
+        .is_some_and(|argument| argument == "--help" || argument == "-h")
+    {
         println!("{USAGE}");
+        if let Some(directory) = dirs::data_local_dir() {
+            println!(
+                "\nWithout a path, Vrac uses {}",
+                directory.join("vrac").join("vrac.vrac").display()
+            );
+        }
         return Ok(());
     }
     if arguments.next().is_some() {
         return Err(USAGE.into());
     }
 
-    let path = PathBuf::from(argument);
+    let default_workspace = argument.is_none();
+    let path = workspace_path(argument, dirs::data_local_dir())?;
+    if default_workspace {
+        fs::create_dir_all(
+            path.parent()
+                .expect("the default workspace always has a parent directory"),
+        )?;
+    }
     let mut app = App::open(Engine::open(&path)?)?;
     let mut terminal = TerminalGuard::enter()?;
 
@@ -72,6 +88,18 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn workspace_path(
+    argument: Option<OsString>,
+    data_directory: Option<PathBuf>,
+) -> Result<PathBuf, &'static str> {
+    if let Some(argument) = argument {
+        return Ok(PathBuf::from(argument));
+    }
+    data_directory
+        .map(|directory| directory.join("vrac").join("vrac.vrac"))
+        .ok_or("cannot determine the local data directory; pass a workspace path")
 }
 
 fn actionable_key(kind: KeyEventKind) -> bool {
@@ -2161,6 +2189,20 @@ fn resolved_editor_content(node: &Node) -> (String, Vec<ReferenceInput>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_path_defaults_to_the_platform_data_directory() {
+        let data = PathBuf::from("platform-data");
+        assert_eq!(
+            workspace_path(None, Some(data.clone())).unwrap(),
+            data.join("vrac").join("vrac.vrac")
+        );
+        assert_eq!(
+            workspace_path(Some(OsString::from("notes.vrac")), None).unwrap(),
+            PathBuf::from("notes.vrac")
+        );
+        assert!(workspace_path(None, None).is_err());
+    }
 
     fn test_app() -> (App, Node, Node) {
         let mut engine = Engine::open(":memory:").unwrap();

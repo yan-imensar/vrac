@@ -37,11 +37,18 @@ cargo build --release -p vrac-cli
 ## Terminal client
 
 The terminal outliner opens an ordinary local `.vrac` database through the
-public engine API and starts on today's Journal page:
+public engine API and starts on today's Journal page. Install it from the
+workspace and launch it directly:
 
 ```sh
-cargo run -p vrac-tui -- /local/path/workspace.vrac
+cargo install --path crates/vrac-tui
+vrac-tui
 ```
+
+Without an argument, it creates and reopens `vrac/vrac.vrac` inside the
+platform's local application-data directory. An explicit workspace remains
+available with `vrac-tui /local/path/workspace.vrac`; `vrac-tui --help` prints
+the resolved default location.
 
 Use `j`/`k` or the arrow keys to move, `h`/`l` to reach a parent or first
 child, `Space` to fold a branch, `Enter` to focus a node, and `-` to return.
