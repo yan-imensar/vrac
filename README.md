@@ -11,8 +11,8 @@ The current SQLite workspace format is documented in [`FORMAT.md`](FORMAT.md).
 
 ```text
 crates/vrac       engine library, model, and SQLite storage
-crates/vrac-cli   CLI client, producing the `vrac` binary
-crates/vrac-tui   experimental keyboard-first terminal client
+crates/vrac-cli   public `vrac` entrypoint and scriptable commands
+crates/vrac-tui   keyboard-first terminal client
 src               minimal Svelte outliner
 src-tauri         thin Tauri client of the engine
 ```
@@ -37,23 +37,27 @@ cargo build --release -p vrac-cli
 ## Terminal client
 
 The terminal outliner uses the same local-first workspace model as the desktop
-application and starts on today's Journal page. Install it from the workspace
-and launch it directly:
+application and starts on today's Journal page. Install the public entrypoint
+and launch it without arguments:
 
 ```sh
-cargo install --path crates/vrac-tui
-vrac-tui
+cargo install --path crates/vrac-cli
+vrac
 ```
 
-On first launch it asks for a workspace folder. This is the visible folder that
-may live in iCloud Drive, Syncthing, Dropbox, or another provider. It contains
-only `workspace-id`, `checkpoint.vrac`, and immutable files under `changes/`.
-The active SQLite database remains private in the platform's local application
-data and is never opened from the synchronized folder. The selected folder is
-remembered for later launches. Running `vrac-tui /path/to/another/folder`
-creates or opens that workspace and makes it the new default. If the configured
-folder is unavailable, Vrac stops instead of silently opening or recreating a
-detached copy.
+On first launch an in-terminal folder browser asks for a workspace folder, so
+it works locally and through SSH without a native dialog. Quick locations point
+to detected iCloud Drive, Syncthing, Dropbox, and OneDrive folders; any local
+directory remains selectable, and a folder can be created in place. This is the
+visible folder that contains only `workspace-id`, `checkpoint.vrac`, and
+immutable files under `changes/`. The active SQLite database remains private in
+the platform's local application data and is never opened from the synchronized
+folder. The selected folder is remembered for later launches. `:workspace` or
+`vrac workspace` opens the selector again. Running
+`vrac tui /path/to/another/folder` creates or opens that workspace and makes it
+the new default. The separately installable `vrac-tui` binary remains a
+compatibility alias. If the configured folder is unavailable, Vrac stops
+instead of silently opening or recreating a detached copy.
 
 Synchronization runs on startup and after idle periods outside inline editing.
 `:sync` requests an immediate round. Closing remains instant: unpublished work
@@ -92,6 +96,11 @@ text. Synchronized terminal updates prevent intermediate redraws from
 flashing. Tree guides show only continuing ancestor branches; structural
 prefixes, references, and tags have distinct visual treatments. Inline
 completion stays beside the outline instead of replacing it.
+
+The same `vrac` binary keeps its non-interactive engine commands (`init`, `add`,
+`node`, `children`, `set-text`, `move`, and `check`). They remain suitable for
+scripts and future editor integrations; launching the TUI does not change their
+arguments, output, or exit-code contract.
 
 ## Performance scenario
 

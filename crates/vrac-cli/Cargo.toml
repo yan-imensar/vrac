@@ -11,6 +11,7 @@ doc = false
 
 [dependencies]
 vrac = { path = "../vrac" }
+vrac-tui = { path = "../vrac-tui" }
 
 [dev-dependencies]
 libc = "0.2"

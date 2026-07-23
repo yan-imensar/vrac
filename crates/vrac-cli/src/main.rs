@@ -8,9 +8,12 @@ use vrac::{
 };
 
 const USAGE: &str = "\
-Vrac, a local-first outliner engine
+Vrac, a local-first outliner
 
 Usage:
+  vrac
+  vrac tui [workspace-folder]
+  vrac workspace
   vrac init <file>
   vrac add <file> [--parent <id>] [--first|--last|--before <id>|--after <id>] <text>
   vrac node <file> <id>
@@ -22,7 +25,39 @@ Usage:
 ";
 
 fn main() -> ExitCode {
-    match run() {
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.is_empty() {
+        return tui_exit(vrac_tui::run_with_workspace(None));
+    }
+    if arguments[0] == "tui" {
+        if arguments
+            .get(1)
+            .is_some_and(|argument| matches!(argument.as_str(), "--help" | "-h"))
+        {
+            if arguments.len() != 2 {
+                eprintln!("error: tui accepts at most one workspace folder\n\n{USAGE}");
+                return ExitCode::from(2);
+            }
+            println!("Usage: vrac tui [workspace-folder]");
+            return ExitCode::SUCCESS;
+        }
+        if arguments.len() > 2 {
+            eprintln!("error: tui accepts at most one workspace folder\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+        return tui_exit(vrac_tui::run_with_workspace(
+            arguments.get(1).map(Into::into),
+        ));
+    }
+    if arguments[0] == "workspace" {
+        if arguments.len() != 1 {
+            eprintln!("error: workspace accepts no arguments\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+        return tui_exit(vrac_tui::run_with_workspace_picker());
+    }
+
+    match run(&arguments) {
         Ok(exit_code) => exit_code,
         Err(CliError::Usage(message)) => {
             eprintln!("error: {message}\n\n{USAGE}");
@@ -35,26 +70,32 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> Result<ExitCode, CliError> {
-    let mut arguments = std::env::args().skip(1);
-    let Some(command) = arguments.next() else {
-        return Err(CliError::Usage("missing command".into()));
-    };
-    let arguments: Vec<String> = arguments.collect();
+fn tui_exit(result: Result<(), Box<dyn StdError>>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
 
+fn run(arguments: &[String]) -> Result<ExitCode, CliError> {
+    let command = &arguments[0];
+    let arguments = &arguments[1..];
     match command.as_str() {
         "help" | "--help" | "-h" => {
             print!("{USAGE}");
             Ok(ExitCode::SUCCESS)
         }
-        "init" => command_init(&arguments),
-        "add" => command_add(&arguments),
-        "node" => command_node(&arguments),
-        "children" => command_children(&arguments),
-        "set-text" => command_set_text(&arguments),
-        "move" => command_move(&arguments),
-        "check" => command_check(&arguments),
-        "generate" => command_generate(&arguments),
+        "init" => command_init(arguments),
+        "add" => command_add(arguments),
+        "node" => command_node(arguments),
+        "children" => command_children(arguments),
+        "set-text" => command_set_text(arguments),
+        "move" => command_move(arguments),
+        "check" => command_check(arguments),
+        "generate" => command_generate(arguments),
         _ => Err(CliError::Usage(format!("unknown command: {command}"))),
     }
 }

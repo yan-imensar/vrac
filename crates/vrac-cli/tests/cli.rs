@@ -13,6 +13,22 @@ fn path_text(path: &Path) -> &str {
 }
 
 #[test]
+fn unified_help_keeps_the_tui_and_scriptable_commands_visible() {
+    let help = vrac(&["--help"]);
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).expect("help is UTF-8");
+    assert!(help.contains("vrac tui [workspace-folder]"));
+    assert!(help.contains("vrac add <file>"));
+
+    let tui_help = vrac(&["tui", "--help"]);
+    assert!(tui_help.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&tui_help.stdout),
+        "Usage: vrac tui [workspace-folder]\n"
+    );
+}
+
+#[test]
 fn the_cli_initializes_edits_moves_and_checks_a_workspace() {
     let directory = tempfile::tempdir().expect("create temporary directory");
     let database = directory.path().join("cli.vrac");
