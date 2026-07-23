@@ -1678,10 +1678,18 @@ impl App {
             self.status = "Protected Journal nodes cannot be edited".into();
             return;
         }
-        let (text, references) = resolved_editor_content(&node);
+        let references = node
+            .references
+            .iter()
+            .map(|reference| ReferenceInput {
+                label_start: reference.label_start,
+                label_end: reference.label_end,
+                target_id: reference.target_id,
+            })
+            .collect();
         self.editor = Some(Editor::new(
             EditTarget::Existing(node.id),
-            text,
+            node.text,
             references,
             node.tags,
         ));
@@ -1852,10 +1860,18 @@ impl App {
 
     fn resume_editing(&mut self, id: NodeId) -> vrac::Result<()> {
         let node = self.engine.node(id)?.ok_or(vrac::Error::NodeNotFound(id))?;
-        let (text, references) = resolved_editor_content(&node);
+        let references = node
+            .references
+            .iter()
+            .map(|reference| ReferenceInput {
+                label_start: reference.label_start,
+                label_end: reference.label_end,
+                target_id: reference.target_id,
+            })
+            .collect();
         self.editor = Some(Editor::new(
             EditTarget::Existing(id),
-            text,
+            node.text,
             references,
             node.tags,
         ));
@@ -2164,26 +2180,6 @@ fn char_to_byte(text: &str, character: usize) -> usize {
     text.char_indices()
         .nth(character)
         .map_or(text.len(), |(byte, _)| byte)
-}
-
-fn resolved_editor_content(node: &Node) -> (String, Vec<ReferenceInput>) {
-    let mut text = String::with_capacity(node.text.len());
-    let mut references = Vec::with_capacity(node.references.len());
-    let mut cursor = 0;
-    for reference in &node.references {
-        text.push_str(&node.text[cursor..reference.label_start]);
-        let label_start = text.len();
-        text.push_str(&reference.target_text);
-        let label_end = text.len();
-        references.push(ReferenceInput {
-            label_start,
-            label_end,
-            target_id: reference.target_id,
-        });
-        cursor = reference.label_end;
-    }
-    text.push_str(&node.text[cursor..]);
-    (text, references)
 }
 
 #[cfg(test)]
@@ -2956,7 +2952,7 @@ mod tests {
     }
 
     #[test]
-    fn renaming_a_target_refreshes_loaded_references_and_the_editor() {
+    fn renaming_a_target_refreshes_loaded_references_without_rewriting_sources() {
         let mut engine = Engine::open(":memory:").unwrap();
         let target = engine.create_node(CreateNode::new("Project")).unwrap();
         let source = engine
@@ -2976,12 +2972,11 @@ mod tests {
 
         app.selected = Some(source.id);
         app.start_edit();
-        let editor = app.editor.as_ref().unwrap();
-        assert_eq!(editor.text, "See [[Renamed]]");
-        assert_eq!(
-            &editor.text[editor.references[0].label_start..editor.references[0].label_end],
-            "Renamed"
-        );
+        assert_eq!(app.editor.as_ref().unwrap().text, "See [[Project]]");
+        app.finish_editor().unwrap();
+        let stored = app.engine.node(source.id).unwrap().unwrap();
+        assert_eq!(stored.text, "See [[Project]]");
+        assert_eq!(stored.references[0].target_text, "Renamed");
     }
 
     #[test]
