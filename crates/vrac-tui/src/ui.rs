@@ -166,7 +166,7 @@ fn draw_display_line(stdout: &mut Stdout, line: &DisplayLine, width: usize) -> i
     if line.selected {
         queue!(stdout, SetAttribute(Attribute::Bold))?;
     }
-    draw_inline_content(stdout, content)?;
+    draw_inline_content(stdout, content, line.selected)?;
     queue!(stdout, SetAttribute(Attribute::Reset), ResetColor)
 }
 
@@ -178,7 +178,11 @@ pub(super) fn split_content(text: &str, requested: usize) -> (&str, &str) {
     text.split_at(split)
 }
 
-fn draw_inline_content(stdout: &mut Stdout, content: &str) -> io::Result<()> {
+pub(super) fn draw_inline_content<W: Write>(
+    stdout: &mut W,
+    content: &str,
+    selected: bool,
+) -> io::Result<()> {
     let mut offset = 0;
     while offset < content.len() {
         let remaining = &content[offset..];
@@ -190,7 +194,12 @@ fn draw_inline_content(stdout: &mut Stdout, content: &str) -> io::Result<()> {
                 stdout,
                 SetForegroundColor(Color::Cyan),
                 Print(&remaining[..end]),
-                ResetColor
+                ResetColor,
+                SetAttribute(if selected {
+                    Attribute::Bold
+                } else {
+                    Attribute::Reset
+                })
             )?;
             offset += end;
             continue;
@@ -211,7 +220,12 @@ fn draw_inline_content(stdout: &mut Stdout, content: &str) -> io::Result<()> {
                 stdout,
                 SetForegroundColor(Color::Magenta),
                 Print(&remaining[..end]),
-                ResetColor
+                ResetColor,
+                SetAttribute(if selected {
+                    Attribute::Bold
+                } else {
+                    Attribute::Reset
+                })
             )?;
             offset += end;
             continue;
@@ -557,6 +571,10 @@ fn draw_editor_status(
 
 pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
     let visible = app.visible_nodes();
+    let draft_active = app
+        .editor
+        .as_ref()
+        .is_some_and(|editor| matches!(editor.target, EditTarget::New { .. }));
     let draft = app.editor.as_ref().and_then(|editor| match editor.target {
         EditTarget::New {
             parent_id,
@@ -575,7 +593,7 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
         let Some(item) = visible.get(index) else {
             continue;
         };
-        let selected = app.selected == Some(item.node.id);
+        let selected = !draft_active && app.selected == Some(item.node.id);
         let selector = if selected { "› " } else { "  " };
         let indent = guide_prefix(&item.guides);
         let marker = if item.node.has_children {
@@ -622,10 +640,11 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
                 .map(|tag| format!("#{tag}"))
                 .collect::<Vec<_>>()
                 .join(" ");
+            let text = resolved_text(&item.node);
             let text = if tags.is_empty() {
-                item.node.text.replace('\n', " ↵ ")
+                text.replace('\n', " ↵ ")
             } else {
-                format!("{}  {tags}", item.node.text.replace('\n', " ↵ "))
+                format!("{}  {tags}", text.replace('\n', " ↵ "))
             };
             for (line_index, content) in wrap_text(&text, available).into_iter().enumerate() {
                 lines.push(DisplayLine {
@@ -752,6 +771,21 @@ fn editor_text(editor: &Editor) -> String {
     format!("{}  {tags}", editor.text)
 }
 
+fn resolved_text(node: &vrac::Node) -> String {
+    if node.references.is_empty() {
+        return node.text.clone();
+    }
+    let mut text = String::with_capacity(node.text.len());
+    let mut cursor = 0;
+    for reference in &node.references {
+        text.push_str(&node.text[cursor..reference.label_start]);
+        text.push_str(&reference.target_text);
+        cursor = reference.label_end;
+    }
+    text.push_str(&node.text[cursor..]);
+    text
+}
+
 fn wrap_editor_text(text: &str, width: usize, cursor: usize) -> Vec<(String, Option<usize>)> {
     let characters: Vec<char> = text.chars().collect();
     let mut lines = Vec::new();
@@ -827,10 +861,11 @@ fn search_lines(search: &Search, width: usize) -> Vec<DisplayLine> {
                         .map(|tag| format!("#{tag}"))
                         .collect::<Vec<_>>()
                         .join(" ");
+                    let text = resolved_text(node).replace('\n', " ↵ ");
                     if tags.is_empty() {
-                        format!("• {}", node.text.replace('\n', " ↵ "))
+                        format!("• {text}")
                     } else {
-                        format!("• {}  {tags}", node.text.replace('\n', " ↵ "))
+                        format!("• {text}  {tags}")
                     }
                 }
             };
@@ -863,7 +898,7 @@ fn backlink_lines(view: &BacklinkView, width: usize) -> Vec<DisplayLine> {
             let selected = index == view.selected;
             let context = path
                 .iter()
-                .map(|node| node.text.replace('\n', " "))
+                .map(|node| resolved_text(node).replace('\n', " "))
                 .collect::<Vec<_>>()
                 .join(" › ");
             DisplayLine {

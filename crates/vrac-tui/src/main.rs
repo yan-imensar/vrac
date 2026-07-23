@@ -22,7 +22,7 @@ mod ui;
 
 use ui::draw;
 #[cfg(test)]
-use ui::{display_lines, split_content, wrap_text};
+use ui::{display_lines, draw_inline_content, split_content, wrap_text};
 
 const USAGE: &str = "Usage: vrac-tui <workspace.vrac>";
 
@@ -1627,18 +1627,10 @@ impl App {
             self.status = "Protected Journal nodes cannot be edited".into();
             return;
         }
-        let references = node
-            .references
-            .iter()
-            .map(|reference| ReferenceInput {
-                label_start: reference.label_start,
-                label_end: reference.label_end,
-                target_id: reference.target_id,
-            })
-            .collect();
+        let (text, references) = resolved_editor_content(&node);
         self.editor = Some(Editor::new(
             EditTarget::Existing(node.id),
-            node.text,
+            text,
             references,
             node.tags,
         ));
@@ -1809,18 +1801,10 @@ impl App {
 
     fn resume_editing(&mut self, id: NodeId) -> vrac::Result<()> {
         let node = self.engine.node(id)?.ok_or(vrac::Error::NodeNotFound(id))?;
-        let references = node
-            .references
-            .iter()
-            .map(|reference| ReferenceInput {
-                label_start: reference.label_start,
-                label_end: reference.label_end,
-                target_id: reference.target_id,
-            })
-            .collect();
+        let (text, references) = resolved_editor_content(&node);
         self.editor = Some(Editor::new(
             EditTarget::Existing(id),
-            node.text,
+            text,
             references,
             node.tags,
         ));
@@ -2019,12 +2003,28 @@ impl App {
         let Some(updated) = self.engine.node(id)? else {
             return Ok(());
         };
-        for branch in self.branches.values_mut() {
-            if let Some(node) = branch.nodes.iter_mut().find(|node| node.id == id) {
+        self.update_cached_node(&updated);
+        Ok(())
+    }
+
+    fn update_cached_node(&mut self, updated: &Node) {
+        for node in &mut self.focus_path {
+            if node.id == updated.id {
                 *node = updated.clone();
             }
         }
-        Ok(())
+        for branch in self.branches.values_mut() {
+            for node in &mut branch.nodes {
+                if node.id == updated.id {
+                    *node = updated.clone();
+                }
+                for reference in &mut node.references {
+                    if reference.target_id == updated.id {
+                        reference.target_text.clone_from(&updated.text);
+                    }
+                }
+            }
+        }
     }
 
     fn start_new_child(&mut self) {
@@ -2058,11 +2058,7 @@ impl App {
                         self.branches.remove(&Some(pruned));
                         self.expanded.remove(&pruned);
                     }
-                    for branch in self.branches.values_mut() {
-                        if let Some(node) = branch.nodes.iter_mut().find(|node| node.id == id) {
-                            *node = updated.clone();
-                        }
-                    }
+                    self.update_cached_node(&updated);
                     self.status = "Saved".into();
                     Ok(Some(updated))
                 }
@@ -2079,9 +2075,18 @@ impl App {
                     input.placement = placement;
                     input.references = editor.references.clone();
                     input.tags = editor.tags.clone();
+                    let may_materialize_root = parent_id.is_some()
+                        && editor
+                            .text
+                            .split_once("[[")
+                            .is_some_and(|(_, rest)| rest.contains("]]"));
                     let created = self.engine.create_node(input)?;
                     self.reload_branch(parent_id)?;
                     if let Some(parent_id) = parent_id {
+                        self.refresh_cached_node(parent_id)?;
+                        if may_materialize_root && self.branches.contains_key(&None) {
+                            self.reload_branch(None)?;
+                        }
                         self.expanded.insert(parent_id);
                     }
                     let loaded = self.branches.get(&parent_id).is_some_and(|branch| {
@@ -2108,6 +2113,26 @@ fn char_to_byte(text: &str, character: usize) -> usize {
     text.char_indices()
         .nth(character)
         .map_or(text.len(), |(byte, _)| byte)
+}
+
+fn resolved_editor_content(node: &Node) -> (String, Vec<ReferenceInput>) {
+    let mut text = String::with_capacity(node.text.len());
+    let mut references = Vec::with_capacity(node.references.len());
+    let mut cursor = 0;
+    for reference in &node.references {
+        text.push_str(&node.text[cursor..reference.label_start]);
+        let label_start = text.len();
+        text.push_str(&reference.target_text);
+        let label_end = text.len();
+        references.push(ReferenceInput {
+            label_start,
+            label_end,
+            target_id: reference.target_id,
+        });
+        cursor = reference.label_end;
+    }
+    text.push_str(&node.text[cursor..]);
+    (text, references)
 }
 
 #[cfg(test)]
@@ -2147,6 +2172,18 @@ mod tests {
     fn styled_lines_never_split_inside_unicode_markers() {
         assert_eq!(split_content("› item", "› ".len()), ("› ", "item"));
         assert_eq!(split_content("› item", 2), ("", "› item"));
+    }
+
+    #[test]
+    fn selected_style_resumes_after_references_and_tags() {
+        let mut output = Vec::new();
+        draw_inline_content(&mut output, "before [[Target]] after #task end", true).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+        let after_reference = rendered.split_once("]]").unwrap().1;
+        let after_tag = rendered.split_once("#task").unwrap().1;
+
+        assert!(after_reference.contains("\u{1b}[1m after"));
+        assert!(after_tag.contains("\u{1b}[1m end"));
     }
 
     #[test]
@@ -2445,6 +2482,52 @@ mod tests {
     }
 
     #[test]
+    fn creating_a_child_refreshes_and_expands_its_parent() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.selected = Some(parent.id);
+        assert!(!app.selected_node().unwrap().has_children);
+
+        app.start_new_child();
+        app.editor.as_mut().unwrap().text = "Child".into();
+        let child = app.commit_editor().unwrap().unwrap();
+
+        app.selected = Some(parent.id);
+        assert!(app.selected_node().unwrap().has_children);
+        assert!(app.expanded.contains(&parent.id));
+        assert!(
+            app.visible_nodes()
+                .iter()
+                .any(|item| item.node.id == child.id)
+        );
+
+        app.toggle_selected().unwrap();
+        assert!(!app.expanded.contains(&parent.id));
+        app.toggle_selected().unwrap();
+        assert!(app.expanded.contains(&parent.id));
+    }
+
+    #[test]
+    fn creating_a_nested_reference_refreshes_materialized_root_concepts() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.selected = Some(parent.id);
+
+        app.start_new_child();
+        app.editor.as_mut().unwrap().text = "See [[Concept]]".into();
+        app.commit_editor().unwrap();
+
+        assert!(
+            app.branches[&None]
+                .nodes
+                .iter()
+                .any(|node| node.text == "Concept")
+        );
+    }
+
+    #[test]
     fn enter_persists_and_continues_with_a_sibling_draft() {
         let (mut app, parent, _) = test_app();
         app.selected = Some(parent.id);
@@ -2666,6 +2749,22 @@ mod tests {
     }
 
     #[test]
+    fn a_new_draft_is_the_only_selected_outline_item() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_new_sibling();
+
+        let lines = display_lines(&app, 80);
+        assert!(
+            lines
+                .iter()
+                .find(|line| line.text.contains("Parent"))
+                .is_some_and(|line| !line.selected)
+        );
+        assert_eq!(lines.iter().filter(|line| line.cursor.is_some()).count(), 1);
+    }
+
+    #[test]
     fn editing_preserves_untouched_stable_references() {
         let mut engine = Engine::open(":memory:").unwrap();
         let source = engine
@@ -2724,6 +2823,35 @@ mod tests {
         let updated = app.engine.node(source.id).unwrap().unwrap();
         assert_eq!(updated.text, "See [[Project]]");
         assert_eq!(updated.references[0].target_id, target.id);
+    }
+
+    #[test]
+    fn renaming_a_target_refreshes_loaded_references_and_the_editor() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let target = engine.create_node(CreateNode::new("Project")).unwrap();
+        let source = engine
+            .create_node(CreateNode::new("See [[Project]]"))
+            .unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.selected = Some(target.id);
+        app.start_edit();
+        app.editor.as_mut().unwrap().text = "Renamed".into();
+        app.commit_editor().unwrap();
+
+        assert!(
+            display_lines(&app, 80)
+                .iter()
+                .any(|line| line.text.contains("[[Renamed]]"))
+        );
+
+        app.selected = Some(source.id);
+        app.start_edit();
+        let editor = app.editor.as_ref().unwrap();
+        assert_eq!(editor.text, "See [[Renamed]]");
+        assert_eq!(
+            &editor.text[editor.references[0].label_start..editor.references[0].label_end],
+            "Renamed"
+        );
     }
 
     #[test]
