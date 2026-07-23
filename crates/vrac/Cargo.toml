@@ -4,9 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[[bin]]
+name = "vrac"
+path = "src/main.rs"
+doc = false
+
 [dependencies]
-blake3 = "1.8.2"
-fallible-streaming-iterator = "0.1.9"
-getrandom = "0.4.3"
-rusqlite = { version = "0.40.1", features = ["backup", "bundled", "session"] }
+vrac = { package = "vrac-engine", path = "../vrac-engine", version = "0.1.0" }
+vrac-tui = { path = "../vrac-tui", version = "0.1.0" }
+
+[dev-dependencies]
+libc = "0.2"
 tempfile = "3.27.0"

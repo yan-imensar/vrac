@@ -1,0 +1,15 @@
+[package]
+name = "vrac-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "vrac"
+
+[dependencies]
+blake3 = "1.8.2"
+fallible-streaming-iterator = "0.1.9"
+getrandom = "0.4.3"
+rusqlite = { version = "0.40.1", features = ["backup", "bundled", "session"] }
+tempfile = "3.27.0"

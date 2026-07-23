@@ -1009,21 +1009,21 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 name = "vrac"
 version = "0.1.0"
 dependencies = [
+ "libc",
+ "tempfile",
+ "vrac-engine",
+ "vrac-tui",
+]
+
+[[package]]
+name = "vrac-engine"
+version = "0.1.0"
+dependencies = [
  "blake3",
  "fallible-streaming-iterator",
  "getrandom 0.4.3",
  "rusqlite",
  "tempfile",
-]
-
-[[package]]
-name = "vrac-cli"
-version = "0.1.0"
-dependencies = [
- "libc",
- "tempfile",
- "vrac",
- "vrac-tui",
 ]
 
 [[package]]
@@ -1037,7 +1037,7 @@ dependencies = [
  "libc",
  "tempfile",
  "unicode-width",
- "vrac",
+ "vrac-engine",
 ]
 
 [[package]]

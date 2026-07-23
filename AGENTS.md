@@ -20,10 +20,11 @@ A speed optimization must never silently weaken durability or integrity.
 
 ## Architecture boundaries
 
-- `vrac` is the engine library. It owns the model, business rules, SQLite
-  schema, queries, and transactions.
-- `vrac-cli` is a thin client of the public `vrac` API. It parses arguments,
-  calls the engine, presents results, and selects exit codes.
+- `vrac-engine` is the engine package and exposes the `vrac` library. It owns
+  the model, business rules, SQLite schema, queries, and transactions.
+- `vrac` is the public product package. Its binary opens the TUI or parses
+  scriptable commands, calls the engine, presents results, and selects exit
+  codes.
 - The CLI, Tauri, and future interfaces contain no SQL or business rules.
 - The engine depends on no user interface, graphical framework, or network
   service.

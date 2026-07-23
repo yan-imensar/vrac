@@ -12,7 +12,8 @@ PRAGMA application_id = 0x56524143; -- `VRAC`
 PRAGMA user_version = 3;
 ```
 
-[`crates/vrac/schema.sql`](crates/vrac/schema.sql) is the executable schema.
+[`crates/vrac-engine/schema.sql`](crates/vrac-engine/schema.sql) is the
+executable schema.
 The engine validates the complete application schema and the single workspace
 identity before accepting a file. A valid unmarked database is marked only
 after that validation succeeds.

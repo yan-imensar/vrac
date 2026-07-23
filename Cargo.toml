@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/vrac", "crates/vrac-cli", "crates/vrac-tui"]
+members = ["crates/vrac-engine", "crates/vrac", "crates/vrac-tui"]
+default-members = ["crates/vrac"]
 exclude = ["src-tauri"]
 resolver = "3"
 

@@ -1,8 +1,8 @@
 # Vrac
 
 Vrac is a local-first outliner designed for fast capture and mental offloading.
-The repository contains the v0.1 Rust engine, its CLI, and the first minimal
-Tauri/Svelte product slice.
+The repository contains its independent Rust engine, the primary terminal
+product, and a frozen Tauri/Svelte desktop prototype.
 
 Contribution rules are documented in [`AGENTS.md`](AGENTS.md).
 The current SQLite workspace format is documented in [`FORMAT.md`](FORMAT.md).
@@ -10,11 +10,11 @@ The current SQLite workspace format is documented in [`FORMAT.md`](FORMAT.md).
 ## Layout
 
 ```text
-crates/vrac       engine library, model, and SQLite storage
-crates/vrac-cli   public `vrac` entrypoint and scriptable commands
-crates/vrac-tui   keyboard-first terminal client
-src               minimal Svelte outliner
-src-tauri         thin Tauri client of the engine
+crates/vrac-engine   engine library, model, and SQLite storage
+crates/vrac          public `vrac` entrypoint and scriptable commands
+crates/vrac-tui      keyboard-first terminal client
+src               frozen Svelte outliner prototype
+src-tauri         frozen Tauri client of the engine
 ```
 
 ## Development
@@ -31,7 +31,7 @@ pnpm build
 Build the optimized CLI with:
 
 ```sh
-cargo build --release -p vrac-cli
+cargo build --release -p vrac
 ```
 
 ## Terminal client
@@ -41,7 +41,7 @@ application and starts on today's Journal page. Install the public entrypoint
 and launch it without arguments:
 
 ```sh
-cargo install --path crates/vrac-cli
+cargo install --path crates/vrac
 vrac
 ```
 
@@ -109,7 +109,7 @@ The reproducible performance scenario defaults to five million nodes and must
 run in release mode against a new file on a local, non-synchronized disk:
 
 ```sh
-cargo run --release -p vrac-cli --example performance -- \
+cargo run --release -p vrac --example performance -- \
   /local/path/vrac-5m-wide.vrac --shape wide
 ```
 
@@ -133,7 +133,7 @@ repeats the frontend's root page, metadata-rich page, indexed node and tag
 completion, Journal-day read, and deep path reads without retaining results:
 
 ```sh
-cargo run --release -p vrac-cli --example memory -- \
+cargo run --release -p vrac --example memory -- \
   /local/path/vrac-5m-wide.vrac
 ```
 
@@ -392,11 +392,11 @@ vrac generate <file> --nodes <n> [--shape wide|deep|mixed]
 Example:
 
 ```sh
-cargo run -p vrac-cli -- init notes.vrac
-root_id=$(cargo run -q -p vrac-cli -- add notes.vrac "First idea")
-cargo run -q -p vrac-cli -- add notes.vrac --parent "$root_id" "Explore further"
-cargo run -q -p vrac-cli -- children notes.vrac --parent "$root_id"
-cargo run -q -p vrac-cli -- check notes.vrac
+cargo run -p vrac -- init notes.vrac
+root_id=$(cargo run -q -p vrac -- add notes.vrac "First idea")
+cargo run -q -p vrac -- add notes.vrac --parent "$root_id" "Explore further"
+cargo run -q -p vrac -- children notes.vrac --parent "$root_id"
+cargo run -q -p vrac -- check notes.vrac
 ```
 
 Node output contains three tab-separated columns: identifier, parent (`-` for a
@@ -444,5 +444,6 @@ nodes; days remain ordinary reference targets and carry the `journal` tag.
 
 File-backed workspaces use foreign-key enforcement, WAL journaling, and
 `synchronous = FULL`. The current canonical schema is
-[`crates/vrac/schema.sql`](crates/vrac/schema.sql); its compatibility rules are
+[`crates/vrac-engine/schema.sql`](crates/vrac-engine/schema.sql); its
+compatibility rules are
 defined in [`FORMAT.md`](FORMAT.md).
