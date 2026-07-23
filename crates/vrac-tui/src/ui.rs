@@ -28,38 +28,7 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
     app.viewport_width = width;
     let completion_height = completion_height(app, height);
     let body_height = height.saturating_sub(4 + completion_height);
-    let lines = match (app.help, &app.backlinks, &app.search) {
-        (true, _, _) => help_lines(),
-        (false, Some(view), _) => backlink_lines(view, width),
-        (false, None, Some(search)) => search_lines(search, width),
-        (false, None, None) => display_lines(app, width),
-    };
-    let selected_start = lines
-        .iter()
-        .position(|line| line.selected)
-        .unwrap_or_default();
-    let selected_end = lines
-        .iter()
-        .rposition(|line| line.selected)
-        .unwrap_or(selected_start);
-    if selected_start < app.scroll {
-        app.scroll = selected_start;
-    } else if body_height > 0 && selected_end >= app.scroll + body_height {
-        let selection_height = selected_end + 1 - selected_start;
-        app.scroll = if selection_height > body_height {
-            selected_start
-        } else {
-            selected_end + 1 - body_height
-        };
-    }
-    if let Some(cursor_line) = lines.iter().position(|line| line.cursor.is_some()) {
-        if cursor_line < app.scroll {
-            app.scroll = cursor_line;
-        } else if body_height > 0 && cursor_line >= app.scroll + body_height {
-            app.scroll = cursor_line + 1 - body_height;
-        }
-    }
-    app.scroll = app.scroll.min(lines.len().saturating_sub(body_height));
+    let lines = frame_lines(app, width, body_height);
 
     queue!(
         stdout,
@@ -147,7 +116,47 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
     stdout.flush()
 }
 
-fn draw_display_line(stdout: &mut Stdout, line: &DisplayLine, width: usize) -> io::Result<()> {
+pub(super) fn frame_lines(app: &mut App, width: usize, body_height: usize) -> Vec<DisplayLine> {
+    let lines = match (app.help, &app.backlinks, &app.search) {
+        (true, _, _) => help_lines(),
+        (false, Some(view), _) => backlink_lines(view, width),
+        (false, None, Some(search)) => search_lines(search, width),
+        (false, None, None) => display_lines(app, width),
+    };
+    let selected_start = lines
+        .iter()
+        .position(|line| line.selected)
+        .unwrap_or_default();
+    let selected_end = lines
+        .iter()
+        .rposition(|line| line.selected)
+        .unwrap_or(selected_start);
+    if selected_start < app.scroll {
+        app.scroll = selected_start;
+    } else if body_height > 0 && selected_end >= app.scroll + body_height {
+        let selection_height = selected_end + 1 - selected_start;
+        app.scroll = if selection_height > body_height {
+            selected_start
+        } else {
+            selected_end + 1 - body_height
+        };
+    }
+    if let Some(cursor_line) = lines.iter().position(|line| line.cursor.is_some()) {
+        if cursor_line < app.scroll {
+            app.scroll = cursor_line;
+        } else if body_height > 0 && cursor_line >= app.scroll + body_height {
+            app.scroll = cursor_line + 1 - body_height;
+        }
+    }
+    app.scroll = app.scroll.min(lines.len().saturating_sub(body_height));
+    lines
+}
+
+pub(super) fn draw_display_line<W: Write>(
+    stdout: &mut W,
+    line: &DisplayLine,
+    width: usize,
+) -> io::Result<()> {
     let fitted = fit(&line.text, width);
     let (prefix, content) = split_content(&fitted, line.content_start);
     queue!(

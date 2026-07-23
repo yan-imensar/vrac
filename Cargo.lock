@@ -1034,6 +1034,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "jiff",
+ "libc",
  "tempfile",
  "unicode-width",
  "vrac",

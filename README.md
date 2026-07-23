@@ -144,6 +144,34 @@ budget. Full integrity checks remain separate because they traverse the entire
 workspace; they must not run on the UI thread. Actual packaged applications
 will receive device-level memory baselines before mobile release.
 
+The terminal client has a separate model and rendering scenario. It clones an
+existing checkpoint into a temporary local database, leaving the source
+untouched, and requires at least five million nodes after its complete
+integrity check:
+
+```sh
+cargo run --release -p vrac-tui --example tui_performance -- \
+  /local/path/to/workspace-or-checkpoint
+```
+
+The scenario opens the TUI root page, lays out and serializes a 120-by-40
+terminal frame, measures navigation and indexed search, then performs 100
+persisted creations, 100 persisted edits, and 20 complete 100-row reloads. The
+current gates are 1.5 seconds to the first-view model, 16.667 ms at p95 for
+interactive work including frame serialization, and 64 MiB of total peak RSS.
+Terminal-emulator and SSH transport latency are deliberately outside the
+reproducible process measurement.
+
+On the reference Mac, the 5,000,203-node wide checkpoint required 4,169.866 ms
+for its one-time version-2 to version-3 migration. Reopening the resulting
+current-format database took 0.608 ms and the complete first-view model took
+1.433 ms. Frame serialization measured 0.045 ms at p95; navigation plus frame
+0.045 ms; search plus frame 1.193 ms; persisted creation plus frame 0.517 ms;
+persisted editing plus frame 0.185 ms; and a 100-row reload plus frame 0.191 ms.
+After the 200 mutations the interactive process peaked at 17,825,792 bytes of
+RSS. The complete 5,000,303-node integrity check took 22.035 seconds as an
+explicitly non-interactive operation.
+
 ## Packaged product baseline
 
 The complete release app has its own reference-Mac gate in addition to the

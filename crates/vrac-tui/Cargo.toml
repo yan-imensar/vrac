@@ -13,4 +13,5 @@ unicode-width = "0.2.2"
 vrac = { path = "../vrac" }
 
 [dev-dependencies]
+libc = "0.2"
 tempfile = "3.27.0"

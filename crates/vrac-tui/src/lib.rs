@@ -22,6 +22,11 @@ mod setup;
 mod ui;
 mod workspace;
 
+mod performance;
+
+#[doc(hidden)]
+pub use performance::run_reference_scenario;
+
 use setup::choose_workspace_folder as pick_workspace_folder;
 use ui::draw;
 #[cfg(test)]
