@@ -43,11 +43,15 @@ through the public engine API:
 cargo run -p vrac-tui -- /local/path/workspace.vrac
 ```
 
-Use `j`/`k` to move, `h`/`l` to navigate the tree, `Space` to fold a branch,
-`i` to edit a plain node, `o` to create a sibling, `c` to create a child, and
-`q` to quit. Reads remain bounded to the first page of each opened branch. The
-prototype intentionally omits search, backlinks, reference-aware editing,
-clipboard commands, and configuration.
+Use `j`/`k` or the arrow keys to move, `h`/`l` to reach a parent or first
+child, `Space` to fold a branch, `Enter` to focus a node, and `-` to return.
+`/` opens bounded search; `i`, `o`, and `c` edit or create nodes; `Tab` and
+`Shift-Tab` indent and outdent; `u` and `Ctrl-R` undo and redo. Holding a
+movement key repeats it, and reaching the end of a loaded sibling page fetches
+the next page automatically. Stable references survive ordinary text edits;
+edited complete `[[labels]]` are resolved again by the engine. The prototype
+intentionally omits backlinks, clipboard commands, deletion, tag editing, and
+configuration.
 
 ## Performance scenario
 
