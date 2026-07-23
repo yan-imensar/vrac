@@ -1,10 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::ffi::OsString;
-use std::fs;
-use std::io::{self, Stdout};
-use std::path::PathBuf;
+use std::io::{self, Stdout, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use arboard::Clipboard;
 use crossterm::cursor::{Hide, Show};
@@ -21,12 +20,15 @@ use vrac::{
 };
 
 mod ui;
+mod workspace;
 
 use ui::draw;
 #[cfg(test)]
 use ui::{display_lines, draw_inline_content, split_content, wrap_text};
+use workspace::{Workspace, configured_folder, remember_folder};
 
-const USAGE: &str = "Usage: vrac-tui [workspace.vrac]";
+const USAGE: &str = "Usage: vrac-tui [workspace-folder]";
+const SYNC_INTERVAL: Duration = Duration::from_secs(2);
 
 fn main() -> ExitCode {
     match run() {
@@ -48,8 +50,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         println!("{USAGE}");
         if let Some(directory) = dirs::data_local_dir() {
             println!(
-                "\nWithout a path, Vrac uses {}",
-                directory.join("vrac").join("vrac.vrac").display()
+                "\nThe first launch asks for a folder managed by iCloud, Syncthing, or another provider.\nVrac keeps its active SQLite database privately in {}.",
+                directory.join("vrac").display()
             );
         }
         return Ok(());
@@ -58,48 +60,154 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Err(USAGE.into());
     }
 
-    let default_workspace = argument.is_none();
-    let path = workspace_path(argument, dirs::data_local_dir())?;
-    if default_workspace {
-        fs::create_dir_all(
-            path.parent()
-                .expect("the default workspace always has a parent directory"),
-        )?;
+    let data_directory = dirs::data_local_dir()
+        .map(|directory| directory.join("vrac"))
+        .ok_or("cannot determine the local application-data directory")?;
+    let folder = choose_workspace_folder(argument.map(PathBuf::from), &data_directory)?;
+    let opened = Workspace::open(&folder, &data_directory)?;
+    remember_folder(&data_directory, opened.workspace.folder())?;
+    let initial_sync = opened.initial_sync;
+    let workspace = opened.workspace;
+    let mut app = App::open(opened.engine)?;
+    if initial_sync.imported > 0 || initial_sync.published > 0 {
+        app.status = format!(
+            "Synced: {} received, {} sent",
+            initial_sync.imported, initial_sync.published
+        );
     }
-    let mut app = App::open(Engine::open(&path)?)?;
     let mut terminal = TerminalGuard::enter()?;
+    let mut next_sync = Instant::now() + SYNC_INTERVAL;
+    let mut refresh_after_edit = false;
+    let mut quit = false;
 
-    loop {
-        draw(terminal.stdout(), &mut app, &path)?;
-        match event::read()? {
-            Event::Key(key) if actionable_key(key.kind) => match app.handle_key(key) {
-                Ok(Action::Quit) => break,
-                Ok(Action::Continue) => {}
-                Err(error) => app.status = error.to_string(),
-            },
-            Event::Paste(text) => {
-                if let Err(error) = app.handle_paste(&text) {
-                    app.status = error.to_string();
+    while !quit {
+        draw(terminal.stdout(), &mut app, workspace.folder())?;
+        let timeout = next_sync.saturating_duration_since(Instant::now());
+        if event::poll(timeout)? {
+            let event = event::read()?;
+            next_sync = Instant::now() + SYNC_INTERVAL;
+            match event {
+                Event::Key(key) if actionable_key(key.kind) => match app.handle_key(key) {
+                    Ok(Action::Quit) => quit = true,
+                    Ok(Action::Sync) => {
+                        sync_workspace(&workspace, &mut app, true, &mut refresh_after_edit)
+                    }
+                    Ok(Action::Continue) => {}
+                    Err(error) => app.status = error.to_string(),
+                },
+                Event::Paste(text) => {
+                    if let Err(error) = app.handle_paste(&text) {
+                        app.status = error.to_string();
+                    }
                 }
+                Event::Resize(_, _) => {}
+                _ => continue,
             }
-            Event::Resize(_, _) => {}
-            _ => continue,
+        }
+        if refresh_after_edit && app.editor.is_none() {
+            if let Err(error) = app.reload_after_sync() {
+                app.status = error.to_string();
+            } else {
+                refresh_after_edit = false;
+            }
+        }
+        if Instant::now() >= next_sync {
+            if app.editor.is_none() {
+                sync_workspace(&workspace, &mut app, false, &mut refresh_after_edit);
+            }
+            next_sync = Instant::now() + SYNC_INTERVAL;
         }
     }
 
     Ok(())
 }
 
-fn workspace_path(
-    argument: Option<OsString>,
-    data_directory: Option<PathBuf>,
-) -> Result<PathBuf, &'static str> {
-    if let Some(argument) = argument {
-        return Ok(PathBuf::from(argument));
+fn choose_workspace_folder(
+    argument: Option<PathBuf>,
+    data_directory: &Path,
+) -> Result<PathBuf, Box<dyn Error>> {
+    let (folder, may_create) = match argument {
+        Some(folder) => (folder, true),
+        None => match configured_folder(data_directory)? {
+            Some(folder) => (folder, false),
+            None => (prompt_workspace_folder()?, true),
+        },
+    };
+    let folder = expand_home(folder)?;
+    let folder = if folder.is_absolute() {
+        folder
+    } else {
+        std::env::current_dir()?.join(folder)
+    };
+    if may_create {
+        std::fs::create_dir_all(&folder)?;
+    } else if !folder.is_dir() {
+        return Err(format!(
+            "the configured workspace folder is unavailable: {}\nLaunch vrac-tui with another folder to select it.",
+            folder.display()
+        )
+        .into());
     }
-    data_directory
-        .map(|directory| directory.join("vrac").join("vrac.vrac"))
-        .ok_or("cannot determine the local data directory; pass a workspace path")
+    Ok(folder.canonicalize()?)
+}
+
+fn prompt_workspace_folder() -> Result<PathBuf, Box<dyn Error>> {
+    println!("Vrac needs a workspace folder for synchronization.");
+    println!("Choose a folder in iCloud Drive, Syncthing, Dropbox, or any local folder.");
+    print!("Workspace folder: ");
+    io::stdout().flush()?;
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("a workspace folder is required".into());
+    }
+    Ok(PathBuf::from(value))
+}
+
+fn expand_home(path: PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+    let Some(value) = path.to_str() else {
+        return Ok(path);
+    };
+    if value == "~" {
+        return dirs::home_dir().ok_or_else(|| "cannot determine the home directory".into());
+    }
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
+        return dirs::home_dir()
+            .map(|home| home.join(rest))
+            .ok_or_else(|| "cannot determine the home directory".into());
+    }
+    Ok(path)
+}
+
+fn sync_workspace(
+    workspace: &Workspace,
+    app: &mut App,
+    explicit: bool,
+    refresh_after_edit: &mut bool,
+) {
+    match workspace.sync(&mut app.engine) {
+        Ok(report) => {
+            if report.imported > 0 {
+                if app.editor.is_some() {
+                    *refresh_after_edit = true;
+                } else if let Err(error) = app.reload_after_sync() {
+                    app.status = error.to_string();
+                    return;
+                }
+            }
+            if explicit || report.imported > 0 {
+                app.status = format!(
+                    "Synced: {} received, {} sent",
+                    report.imported, report.published
+                );
+            }
+        }
+        Err(error) => app.status = format!("Sync error: {error}"),
+    }
 }
 
 fn actionable_key(kind: KeyEventKind) -> bool {
@@ -157,6 +265,7 @@ struct VisibleNode {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Action {
     Continue,
+    Sync,
     Quit,
 }
 
@@ -199,6 +308,7 @@ enum Command {
     Redo,
     Tag,
     Backlinks,
+    Sync,
     Quit,
 }
 
@@ -304,6 +414,11 @@ const COMMANDS: &[CommandEntry] = &[
         command: Command::Backlinks,
         name: "backlinks",
         hint: "show references to the selected bullet",
+    },
+    CommandEntry {
+        command: Command::Sync,
+        name: "sync",
+        hint: "synchronize the current workspace now",
     },
     CommandEntry {
         command: Command::Quit,
@@ -1482,6 +1597,7 @@ impl App {
             Command::Redo => self.redo()?,
             Command::Tag => self.start_tag_prompt()?,
             Command::Backlinks => self.start_backlinks()?,
+            Command::Sync => return Ok(Action::Sync),
             Command::Quit => return Ok(Action::Quit),
         }
         Ok(Action::Continue)
@@ -2000,6 +2116,19 @@ impl App {
         self.set_focus(focus)
     }
 
+    fn reload_after_sync(&mut self) -> vrac::Result<()> {
+        let selected = self.selected;
+        self.reload_after_history()?;
+        if selected.is_some_and(|id| {
+            self.visible_nodes()
+                .iter()
+                .any(|visible| visible.node.id == id)
+        }) {
+            self.selected = selected;
+        }
+        Ok(())
+    }
+
     fn copy_selected(&mut self) -> vrac::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
@@ -2209,17 +2338,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workspace_path_defaults_to_the_platform_data_directory() {
-        let data = PathBuf::from("platform-data");
+    fn absolute_workspace_arguments_are_kept() {
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("vrac-workspace");
+        std::fs::create_dir(&folder).unwrap();
         assert_eq!(
-            workspace_path(None, Some(data.clone())).unwrap(),
-            data.join("vrac").join("vrac.vrac")
+            choose_workspace_folder(Some(folder.clone()), Path::new("unused")).unwrap(),
+            folder.canonicalize().unwrap()
         );
-        assert_eq!(
-            workspace_path(Some(OsString::from("notes.vrac")), None).unwrap(),
-            PathBuf::from("notes.vrac")
-        );
-        assert!(workspace_path(None, None).is_err());
+    }
+
+    #[test]
+    fn an_unavailable_configured_folder_is_not_recreated() {
+        let data = tempfile::tempdir().unwrap();
+        let parent = tempfile::tempdir().unwrap();
+        let folder = parent.path().join("missing-workspace");
+        remember_folder(data.path(), &folder).unwrap();
+
+        assert!(choose_workspace_folder(None, data.path()).is_err());
+        assert!(!folder.exists());
     }
 
     fn test_app() -> (App, Node, Node) {
@@ -2724,6 +2861,12 @@ mod tests {
             app.engine.node(parent.id).unwrap().unwrap().text,
             "Safe quit"
         );
+    }
+
+    #[test]
+    fn sync_command_requests_a_provider_round() {
+        let (mut app, _, _) = test_app();
+        assert_eq!(app.run_command(Command::Sync).unwrap(), Action::Sync);
     }
 
     #[test]

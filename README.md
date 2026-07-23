@@ -36,19 +36,32 @@ cargo build --release -p vrac-cli
 
 ## Terminal client
 
-The terminal outliner opens an ordinary local `.vrac` database through the
-public engine API and starts on today's Journal page. Install it from the
-workspace and launch it directly:
+The terminal outliner uses the same local-first workspace model as the desktop
+application and starts on today's Journal page. Install it from the workspace
+and launch it directly:
 
 ```sh
 cargo install --path crates/vrac-tui
 vrac-tui
 ```
 
-Without an argument, it creates and reopens `vrac/vrac.vrac` inside the
-platform's local application-data directory. An explicit workspace remains
-available with `vrac-tui /local/path/workspace.vrac`; `vrac-tui --help` prints
-the resolved default location.
+On first launch it asks for a workspace folder. This is the visible folder that
+may live in iCloud Drive, Syncthing, Dropbox, or another provider. It contains
+only `workspace-id`, `checkpoint.vrac`, and immutable files under `changes/`.
+The active SQLite database remains private in the platform's local application
+data and is never opened from the synchronized folder. The selected folder is
+remembered for later launches. Running `vrac-tui /path/to/another/folder`
+creates or opens that workspace and makes it the new default. If the configured
+folder is unavailable, Vrac stops instead of silently opening or recreating a
+detached copy.
+
+Synchronization runs on startup and after idle periods outside inline editing.
+`:sync` requests an immediate round. Closing remains instant: unpublished work
+is already durable in the local outbox and is sent on the next round. A folder
+already containing a Vrac workspace installs a validated private local copy;
+an empty folder creates a new workspace. The previous implicit local database,
+when present, is attached to the first selected folder without deleting the
+original file.
 
 Use `j`/`k` or the arrow keys to move, `h`/`l` to reach a parent or first
 child, `Space` to fold a branch, `Enter` to focus a node, and `-` to return.
@@ -75,7 +88,7 @@ matching nodes. While editing any existing or new bullet,
 `[[` opens stable-reference completion and `#` opens tag completion. Enter or
 Tab accepts a completion; typed or pasted closing brackets return directly to
 the outline editor. Tags selected on a draft are created atomically with its
-text. Configuration remains future work. Synchronized terminal updates prevent intermediate redraws from
+text. Synchronized terminal updates prevent intermediate redraws from
 flashing. Tree guides show only continuing ancestor branches; structural
 prefixes, references, and tags have distinct visual treatments. Inline
 completion stays beside the outline instead of replacing it.

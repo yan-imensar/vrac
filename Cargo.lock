@@ -1033,6 +1033,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "jiff",
+ "tempfile",
  "unicode-width",
  "vrac",
 ]
