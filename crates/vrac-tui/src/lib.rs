@@ -1039,9 +1039,9 @@ impl App {
             KeyCode::End | KeyCode::Char('G') => self.select_edge(true),
             KeyCode::Char('l') | KeyCode::Right => self.move_right()?,
             KeyCode::Char('h') | KeyCode::Left => self.move_left()?,
+            KeyCode::Char('H') => self.zoom_out()?,
             KeyCode::Char(' ') => self.toggle_selected()?,
             KeyCode::Enter => self.zoom_selected()?,
-            KeyCode::Backspace | KeyCode::Char('-') => self.zoom_out()?,
             KeyCode::Char('/') => self.start_search(PromptKind::Search)?,
             KeyCode::Char(':') => self.start_search(PromptKind::Commands)?,
             KeyCode::Char('#') => self.start_tag_prompt()?,
@@ -1519,8 +1519,6 @@ impl App {
                 .parent_id
                 .expect("a visible descendant below the focus has a parent");
             self.selected = Some(parent_id);
-        } else {
-            self.zoom_out()?;
         }
         Ok(())
     }
@@ -2580,6 +2578,25 @@ mod tests {
         assert_eq!(app.focus_label(), "root › Parent");
 
         app.zoom_out().unwrap();
+        assert_eq!(app.focus, None);
+        assert_eq!(app.selected, Some(parent.id));
+    }
+
+    #[test]
+    fn left_stops_at_the_zoom_boundary_and_capital_h_zooms_out() {
+        let (mut app, parent, child) = test_app();
+        app.selected = Some(parent.id);
+        app.zoom_selected().unwrap();
+        assert_eq!(app.focus, Some(parent.id));
+        assert_eq!(app.selected, Some(child.id));
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.focus, Some(parent.id));
+        assert_eq!(app.selected, Some(child.id));
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('H'), KeyModifiers::SHIFT))
+            .unwrap();
         assert_eq!(app.focus, None);
         assert_eq!(app.selected, Some(parent.id));
     }

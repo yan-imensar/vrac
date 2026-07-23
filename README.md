@@ -68,7 +68,8 @@ when present, is attached to the first selected folder without deleting the
 original file.
 
 Use `j`/`k` or the arrow keys to move, `h`/`l` to reach a parent or first
-child, `Space` to fold a branch, `Enter` to focus a node, and `-` to return.
+child without leaving the current zoom, `Space` to fold a branch, `Enter` to
+focus a node, and `H` to return to the parent zoom.
 `/` opens bounded node search and `:` opens the command menu; `#` toggles tags;
 `i`, `o`, and `c` edit or create nodes directly in the outline. The normal
 footer stays quiet; `?` opens the complete keyboard help and `?` or `Esc`
