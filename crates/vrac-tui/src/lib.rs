@@ -828,6 +828,14 @@ impl App {
         Ok(())
     }
 
+    fn reload_changed_branch(&mut self, parent_id: Option<NodeId>) -> vrac::Result<()> {
+        self.reload_branch(parent_id)?;
+        if let Some(parent_id) = parent_id {
+            self.refresh_cached_node(parent_id)?;
+        }
+        Ok(())
+    }
+
     fn load_more(&mut self, parent_id: Option<NodeId>) -> vrac::Result<bool> {
         let Some(after) = self.branches.get(&parent_id).and_then(|branch| branch.next) else {
             return Ok(false);
@@ -846,6 +854,20 @@ impl App {
         branch.nodes.extend(page.nodes);
         branch.next = page.next;
         Ok(true)
+    }
+
+    fn load_to_count(
+        &mut self,
+        parent_id: Option<NodeId>,
+        previous_count: usize,
+    ) -> vrac::Result<()> {
+        while self
+            .branches
+            .get(&parent_id)
+            .is_some_and(|branch| branch.nodes.len() < previous_count)
+            && self.load_more(parent_id)?
+        {}
+        Ok(())
     }
 
     fn focus_label(&self) -> String {
@@ -1018,15 +1040,16 @@ impl App {
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
-        if let Some(pending) = self.pending_key.take()
-            && key.code == KeyCode::Char(pending)
-        {
-            match pending {
-                'y' => self.copy_selected()?,
-                'd' => self.delete_selected()?,
-                _ => unreachable!("only known prefixes are retained"),
+        if let Some(pending) = self.pending_key.take() {
+            self.status.clear();
+            if key.code == KeyCode::Char(pending) {
+                match pending {
+                    'y' => self.copy_selected()?,
+                    'd' => self.delete_selected()?,
+                    _ => unreachable!("only known prefixes are retained"),
+                }
+                return Ok(Action::Continue);
             }
-            return Ok(Action::Continue);
         }
         match key.code {
             KeyCode::Char('q') => return Ok(Action::Quit),
@@ -1519,6 +1542,9 @@ impl App {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
+        if self.expanded.remove(&node.id) {
+            return Ok(());
+        }
         if node.parent_id != self.focus {
             let parent_id = node
                 .parent_id
@@ -1747,19 +1773,40 @@ impl App {
                 return Ok(());
             }
         };
-        let page = self.engine.backlinks(target_id, None, Page::default())?;
         self.backlinks = Some(BacklinkView {
             target_id,
-            contexts: page
-                .contexts
-                .into_iter()
-                .map(|context| context.path)
-                .collect(),
-            next: page.next,
+            contexts: Vec::new(),
+            next: None,
             selected: 0,
         });
+        self.refresh_backlinks()?;
         self.status.clear();
         self.scroll = 0;
+        Ok(())
+    }
+
+    fn refresh_backlinks(&mut self) -> vrac::Result<()> {
+        let Some(view) = self.backlinks.as_ref() else {
+            return Ok(());
+        };
+        let target_id = view.target_id;
+        let selected = view.selected;
+        if self.engine.node(target_id)?.is_none() {
+            self.backlinks = None;
+            return Ok(());
+        }
+        let page = self.engine.backlinks(target_id, None, Page::default())?;
+        let contexts = page
+            .contexts
+            .into_iter()
+            .map(|context| context.path)
+            .collect::<Vec<_>>();
+        self.backlinks = Some(BacklinkView {
+            target_id,
+            selected: selected.min(contexts.len().saturating_sub(1)),
+            contexts,
+            next: page.next,
+        });
         Ok(())
     }
 
@@ -2078,8 +2125,8 @@ impl App {
                 placement: Placement::Last,
             },
         )?;
-        self.reload_branch(old_parent)?;
-        self.reload_branch(Some(new_parent))?;
+        self.reload_changed_branch(old_parent)?;
+        self.reload_changed_branch(Some(new_parent))?;
         self.expanded.insert(new_parent);
         self.selected = Some(node.id);
         self.status = "Indented".into();
@@ -2110,8 +2157,8 @@ impl App {
                 placement: Placement::After(parent_id),
             },
         )?;
-        self.reload_branch(Some(parent_id))?;
-        self.reload_branch(destination_parent)?;
+        self.reload_changed_branch(Some(parent_id))?;
+        self.reload_changed_branch(destination_parent)?;
         if self.focus == Some(parent_id) {
             self.set_focus(destination_parent)?;
         }
@@ -2152,13 +2199,76 @@ impl App {
 
     fn reload_after_sync(&mut self) -> vrac::Result<()> {
         let selected = self.selected;
-        self.reload_after_history()?;
+        let open_branches = self
+            .visible_nodes()
+            .into_iter()
+            .filter(|visible| self.expanded.contains(&visible.node.id))
+            .map(|visible| {
+                let loaded = self
+                    .branches
+                    .get(&Some(visible.node.id))
+                    .map_or(0, |branch| branch.nodes.len());
+                (visible.node.id, loaded)
+            })
+            .collect::<Vec<_>>();
+        let focus = match self.focus {
+            Some(id) if self.engine.node(id)?.is_some() => Some(id),
+            _ => None,
+        };
+        let focused_count = self
+            .branches
+            .get(&self.focus)
+            .map_or(0, |branch| branch.nodes.len());
+        self.branches.clear();
+        self.expanded.clear();
+        self.set_focus(focus)?;
+        self.load_to_count(focus, focused_count)?;
+
+        let mut reachable = self
+            .branches
+            .get(&focus)
+            .into_iter()
+            .flat_map(|branch| branch.nodes.iter().map(|node| node.id))
+            .collect::<HashSet<_>>();
+        for (id, previous_count) in open_branches {
+            if !reachable.contains(&id) {
+                continue;
+            }
+            let has_children = self
+                .branches
+                .values()
+                .flat_map(|branch| &branch.nodes)
+                .find(|node| node.id == id)
+                .is_some_and(|node| node.has_children);
+            if !has_children {
+                continue;
+            }
+            self.reload_branch(Some(id))?;
+            self.load_to_count(Some(id), previous_count)?;
+            if let Some(branch) = self.branches.get(&Some(id)) {
+                reachable.extend(branch.nodes.iter().map(|node| node.id));
+            }
+            self.expanded.insert(id);
+        }
         if selected.is_some_and(|id| {
             self.visible_nodes()
                 .iter()
                 .any(|visible| visible.node.id == id)
         }) {
             self.selected = selected;
+        }
+        if self.search.is_some() {
+            self.refresh_search()?;
+        }
+        if let Some(TagTarget::Node(id)) = self.tag_prompt.as_ref().map(|prompt| prompt.target)
+            && self.engine.node(id)?.is_none()
+        {
+            self.tag_prompt = None;
+        } else if self.tag_prompt.is_some() {
+            self.refresh_tag_prompt()?;
+        }
+        if self.backlinks.is_some() {
+            self.refresh_backlinks()?;
         }
         Ok(())
     }
@@ -2195,10 +2305,7 @@ impl App {
         }
 
         let outcome = self.engine.delete_node(node.id)?;
-        self.reload_branch(node.parent_id)?;
-        if let Some(parent_id) = node.parent_id {
-            self.refresh_cached_node(parent_id)?;
-        }
+        self.reload_changed_branch(node.parent_id)?;
         self.branches.remove(&Some(node.id));
         self.expanded.remove(&node.id);
         for pruned in outcome.pruned_roots {
@@ -2235,10 +2342,7 @@ impl App {
             },
             &text,
         )?;
-        self.reload_branch(parent_id)?;
-        if let Some(parent_id) = parent_id {
-            self.refresh_cached_node(parent_id)?;
-        }
+        self.reload_changed_branch(parent_id)?;
         if parent_id.is_some() && self.branches.contains_key(&None) {
             self.reload_branch(None)?;
         }
@@ -2333,9 +2437,8 @@ impl App {
                             .split_once("[[")
                             .is_some_and(|(_, rest)| rest.contains("]]"));
                     let created = self.engine.create_node(input)?;
-                    self.reload_branch(parent_id)?;
+                    self.reload_changed_branch(parent_id)?;
                     if let Some(parent_id) = parent_id {
-                        self.refresh_cached_node(parent_id)?;
                         if may_materialize_root && self.branches.contains_key(&None) {
                             self.reload_branch(None)?;
                         }
@@ -2588,6 +2691,24 @@ mod tests {
     }
 
     #[test]
+    fn left_collapses_an_expanded_node_before_selecting_its_parent() {
+        let (mut app, parent, child) = test_app();
+        app.selected = Some(parent.id);
+        app.expand(parent.id).unwrap();
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.selected, Some(parent.id));
+        assert!(!app.expanded.contains(&parent.id));
+        assert!(
+            app.visible_nodes()
+                .iter()
+                .all(|item| item.node.id != child.id)
+        );
+    }
+
+    #[test]
     fn left_stops_at_the_zoom_boundary_and_capital_h_zooms_out() {
         let (mut app, parent, child) = test_app();
         app.selected = Some(parent.id);
@@ -2604,6 +2725,22 @@ mod tests {
             .unwrap();
         assert_eq!(app.focus, None);
         assert_eq!(app.selected, Some(parent.id));
+    }
+
+    #[test]
+    fn an_incomplete_normal_mode_prefix_does_not_leave_stale_status() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.pending_key, Some('y'));
+        assert_eq!(app.status, "y");
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.pending_key, None);
+        assert!(app.status.is_empty());
     }
 
     #[test]
@@ -2757,10 +2894,103 @@ mod tests {
     }
 
     #[test]
-    fn indent_and_outdent_use_engine_moves() {
+    fn sync_reload_refreshes_an_open_backlink_view() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let source = engine
+            .create_node(CreateNode::new("See [[Target]]"))
+            .unwrap();
+        let target = source.references[0].target_id;
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.selected = Some(target);
+        app.start_backlinks().unwrap();
+        assert_eq!(app.backlinks.as_ref().unwrap().contexts.len(), 1);
+
+        app.engine
+            .create_node(CreateNode::new("Another [[Target]] reference"))
+            .unwrap();
+        app.reload_after_sync().unwrap();
+
+        assert_eq!(app.backlinks.as_ref().unwrap().contexts.len(), 2);
+    }
+
+    #[test]
+    fn sync_reload_refreshes_open_search_results() {
         let (mut app, parent, _) = test_app();
-        let sibling = app.engine.create_node(CreateNode::new("Sibling")).unwrap();
-        app.reload_branch(None).unwrap();
+        app.start_search(PromptKind::Search).unwrap();
+        for character in "Parent".chars() {
+            app.search.as_mut().unwrap().insert(character);
+        }
+        app.refresh_search().unwrap();
+        assert!(
+            app.search
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .any(|item| matches!(item, LauncherItem::Node(node) if node.id == parent.id))
+        );
+
+        app.engine
+            .set_text(parent.id, "Renamed after sync".into())
+            .unwrap();
+        app.reload_after_sync().unwrap();
+
+        assert!(
+            app.search
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .all(|item| !matches!(item, LauncherItem::Node(node) if node.id == parent.id))
+        );
+    }
+
+    #[test]
+    fn sync_reload_preserves_open_branches_and_the_visible_selection() {
+        let (mut app, parent, child) = test_app();
+        app.expand(parent.id).unwrap();
+        app.selected = Some(child.id);
+
+        app.engine
+            .set_text(child.id, "Updated by sync".into())
+            .unwrap();
+        app.reload_after_sync().unwrap();
+
+        assert!(app.expanded.contains(&parent.id));
+        assert_eq!(app.selected, Some(child.id));
+        assert_eq!(app.selected_node().unwrap().text, "Updated by sync");
+    }
+
+    #[test]
+    fn sync_reload_preserves_loaded_pages() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        for index in 0..205 {
+            engine
+                .create_node(CreateNode::new(format!("Node {index:03}")))
+                .unwrap();
+        }
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.load_more(None).unwrap();
+        let selected = app.branches[&None].nodes[150].id;
+        let loaded = app.branches[&None].nodes.len();
+        app.selected = Some(selected);
+
+        app.engine
+            .set_text(selected, "Updated beyond page one".into())
+            .unwrap();
+        app.reload_after_sync().unwrap();
+
+        assert_eq!(app.branches[&None].nodes.len(), loaded);
+        assert_eq!(app.selected, Some(selected));
+        assert_eq!(app.selected_node().unwrap().text, "Updated beyond page one");
+    }
+
+    #[test]
+    fn indent_and_outdent_refresh_the_changed_parent() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
+        let sibling = engine.create_node(CreateNode::new("Sibling")).unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
         app.selected = Some(sibling.id);
 
         app.indent_selected().unwrap();
@@ -2768,12 +2998,25 @@ mod tests {
             app.engine.node(sibling.id).unwrap().unwrap().parent_id,
             Some(parent.id)
         );
+        app.selected = Some(parent.id);
+        assert!(app.selected_node().unwrap().has_children);
+        assert!(app.expanded.contains(&parent.id));
+        assert!(
+            app.visible_nodes()
+                .iter()
+                .any(|item| item.node.id == sibling.id)
+        );
 
+        app.selected = Some(sibling.id);
         app.outdent_selected().unwrap();
         assert_eq!(
             app.engine.node(sibling.id).unwrap().unwrap().parent_id,
             None
         );
+        app.selected = Some(parent.id);
+        assert!(!app.selected_node().unwrap().has_children);
+        assert!(!app.expanded.contains(&parent.id));
+        assert!(!app.branches.contains_key(&Some(parent.id)));
     }
 
     #[test]

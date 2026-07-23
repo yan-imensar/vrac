@@ -503,7 +503,7 @@ fn help_lines() -> Vec<DisplayLine> {
     [
         "  NAVIGATION",
         "    j/k or ↑/↓       move",
-        "    h/l or ←/→       parent / child",
+        "    h/l or ←/→       close/parent · open/child",
         "    H                zoom out",
         "    Space            collapse / expand",
         "    Enter            zoom in",
