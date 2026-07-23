@@ -137,11 +137,151 @@ struct Editor {
     references: Vec<ReferenceInput>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Command {
+    New,
+    NewBefore,
+    NewChild,
+    Zoom,
+    ZoomOut,
+    Today,
+    Root,
+    FocusParent,
+    FocusChild,
+    Toggle,
+    Indent,
+    Outdent,
+    Delete,
+    Copy,
+    Paste,
+    Undo,
+    Redo,
+    Tag,
+    Backlinks,
+    Quit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CommandEntry {
+    command: Command,
+    name: &'static str,
+    hint: &'static str,
+}
+
+const COMMANDS: &[CommandEntry] = &[
+    CommandEntry {
+        command: Command::New,
+        name: "new",
+        hint: "create a sibling after the selected bullet",
+    },
+    CommandEntry {
+        command: Command::NewBefore,
+        name: "new_before",
+        hint: "create a sibling before the selected bullet",
+    },
+    CommandEntry {
+        command: Command::NewChild,
+        name: "new_child",
+        hint: "create a child under the selected bullet",
+    },
+    CommandEntry {
+        command: Command::Zoom,
+        name: "zoom",
+        hint: "focus the selected bullet",
+    },
+    CommandEntry {
+        command: Command::ZoomOut,
+        name: "zoom_out",
+        hint: "return to the parent view",
+    },
+    CommandEntry {
+        command: Command::Today,
+        name: "today",
+        hint: "open today's Journal page",
+    },
+    CommandEntry {
+        command: Command::Root,
+        name: "root",
+        hint: "open the workspace root",
+    },
+    CommandEntry {
+        command: Command::FocusParent,
+        name: "focus_parent",
+        hint: "collapse or select the parent bullet",
+    },
+    CommandEntry {
+        command: Command::FocusChild,
+        name: "focus_child",
+        hint: "expand or select the first child",
+    },
+    CommandEntry {
+        command: Command::Toggle,
+        name: "toggle",
+        hint: "expand or collapse the selected bullet",
+    },
+    CommandEntry {
+        command: Command::Indent,
+        name: "indent",
+        hint: "move the bullet under its previous sibling",
+    },
+    CommandEntry {
+        command: Command::Outdent,
+        name: "outdent",
+        hint: "move the bullet after its parent",
+    },
+    CommandEntry {
+        command: Command::Delete,
+        name: "delete",
+        hint: "copy and delete the selected subtree",
+    },
+    CommandEntry {
+        command: Command::Copy,
+        name: "copy",
+        hint: "copy the selected subtree",
+    },
+    CommandEntry {
+        command: Command::Paste,
+        name: "paste",
+        hint: "paste after the selected bullet",
+    },
+    CommandEntry {
+        command: Command::Undo,
+        name: "undo",
+        hint: "undo the latest change",
+    },
+    CommandEntry {
+        command: Command::Redo,
+        name: "redo",
+        hint: "redo the latest undone change",
+    },
+    CommandEntry {
+        command: Command::Tag,
+        name: "tag",
+        hint: "open tag completion for the selected bullet",
+    },
+    CommandEntry {
+        command: Command::Backlinks,
+        name: "backlinks",
+        hint: "show references to the selected bullet",
+    },
+    CommandEntry {
+        command: Command::Quit,
+        name: "quit",
+        hint: "close Vrac TUI",
+    },
+];
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LauncherItem {
+    Command(CommandEntry),
+    Node(Node),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Search {
     text: String,
     cursor: usize,
-    results: Vec<Node>,
+    items: Vec<LauncherItem>,
     selected: usize,
 }
 
@@ -173,7 +313,7 @@ impl Search {
         Self {
             text: String::new(),
             cursor: 0,
-            results: Vec::new(),
+            items: Vec::new(),
             selected: 0,
         }
     }
@@ -500,11 +640,13 @@ impl App {
             KeyCode::Char(' ') => self.toggle_selected()?,
             KeyCode::Enter => self.zoom_selected()?,
             KeyCode::Backspace | KeyCode::Char('-') => self.zoom_out()?,
-            KeyCode::Char('/') => self.start_search(),
+            KeyCode::Char('/') | KeyCode::Char(':') => self.start_search()?,
             KeyCode::Char('#') => self.start_tag_prompt()?,
             KeyCode::Char('b') => self.start_backlinks()?,
-            KeyCode::Char('i') => self.start_edit(),
+            KeyCode::Char('i') | KeyCode::Char('I') => self.start_edit_at_start(),
+            KeyCode::Char('a') | KeyCode::Char('A') => self.start_edit(),
             KeyCode::Char('o') => self.start_new_sibling(),
+            KeyCode::Char('O') => self.start_new_before(),
             KeyCode::Char('c') => self.start_new_child(),
             KeyCode::Char('y') => {
                 self.pending_key = Some('y');
@@ -531,23 +673,14 @@ impl App {
                 self.status.clear();
                 self.scroll = 0;
             }
-            KeyCode::Enter => {
-                let target = self
-                    .search
-                    .as_ref()
-                    .and_then(|search| search.results.get(search.selected).map(|node| node.id));
-                self.search = None;
-                if let Some(target) = target {
-                    self.set_focus(Some(target))?;
-                }
-            }
+            KeyCode::Enter => return self.commit_launcher(),
             KeyCode::Up => {
                 let search = self.search.as_mut().expect("search is active");
                 search.selected = search.selected.saturating_sub(1);
             }
             KeyCode::Down => {
                 let search = self.search.as_mut().expect("search is active");
-                search.selected = (search.selected + 1).min(search.results.len().saturating_sub(1));
+                search.selected = (search.selected + 1).min(search.items.len().saturating_sub(1));
             }
             KeyCode::Left => {
                 let search = self.search.as_mut().expect("search is active");
@@ -726,11 +859,10 @@ impl App {
 
     fn handle_editor_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
         match key.code {
-            KeyCode::Esc => {
-                self.editor = None;
-                self.status = "Edit cancelled".into();
-            }
-            KeyCode::Enter => self.commit_editor()?,
+            KeyCode::Esc => self.finish_editor()?,
+            KeyCode::Enter => self.create_sibling_from_editor()?,
+            KeyCode::Tab => self.indent_editor()?,
+            KeyCode::BackTab => self.outdent_editor()?,
             KeyCode::Left => {
                 let editor = self.editor.as_mut().expect("editor is active");
                 editor.cursor = editor.cursor.saturating_sub(1);
@@ -887,20 +1019,87 @@ impl App {
         Ok(())
     }
 
-    fn start_search(&mut self) {
+    fn start_search(&mut self) -> vrac::Result<()> {
         self.search = Some(Search::new());
         self.status.clear();
         self.scroll = 0;
+        self.refresh_search()
     }
 
     fn refresh_search(&mut self) -> vrac::Result<()> {
         let query = self.search.as_ref().expect("search is active").text.clone();
-        let results = self.engine.search(&query, 20)?;
+        let normalized = query.trim().to_lowercase();
+        let mut items = COMMANDS
+            .iter()
+            .filter(|entry| {
+                normalized.is_empty()
+                    || entry.name.contains(&normalized)
+                    || entry.hint.contains(&normalized)
+            })
+            .copied()
+            .map(LauncherItem::Command)
+            .collect::<Vec<_>>();
+        if normalized.chars().count() >= 2 {
+            items.extend(
+                self.engine
+                    .search(&query, 20)?
+                    .into_iter()
+                    .map(LauncherItem::Node),
+            );
+        }
         let search = self.search.as_mut().expect("search is active");
-        search.results = results;
-        search.selected = search.selected.min(search.results.len().saturating_sub(1));
+        search.items = items;
+        search.selected = 0;
         self.status.clear();
         Ok(())
+    }
+
+    fn commit_launcher(&mut self) -> vrac::Result<Action> {
+        let item = self
+            .search
+            .as_ref()
+            .and_then(|search| search.items.get(search.selected))
+            .cloned();
+        self.search = None;
+        self.scroll = 0;
+        match item {
+            Some(LauncherItem::Command(entry)) => self.run_command(entry.command),
+            Some(LauncherItem::Node(node)) => {
+                self.set_focus(Some(node.id))?;
+                Ok(Action::Continue)
+            }
+            None => Ok(Action::Continue),
+        }
+    }
+
+    fn run_command(&mut self, command: Command) -> vrac::Result<Action> {
+        match command {
+            Command::New => self.start_new_sibling(),
+            Command::NewBefore => self.start_new_before(),
+            Command::NewChild => self.start_new_child(),
+            Command::Zoom => self.zoom_selected()?,
+            Command::ZoomOut => self.zoom_out()?,
+            Command::Today => {
+                let today = jiff::Zoned::now().date().to_string();
+                let day = self.engine.journal_day(&today)?;
+                self.set_focus(Some(day.id))?;
+            }
+            Command::Root => self.set_focus(None)?,
+            Command::FocusParent => self.move_left()?,
+            Command::FocusChild => self.move_right()?,
+            Command::Toggle => self.toggle_selected()?,
+            Command::Indent => self.indent_selected()?,
+            Command::Outdent => self.outdent_selected()?,
+            Command::Delete => self.delete_selected()?,
+            Command::Copy => self.copy_selected()?,
+            Command::Paste => self.paste_after_selected()?,
+            Command::Undo => self.undo()?,
+            Command::Redo => self.redo()?,
+            Command::Tag => self.start_tag_prompt()?,
+            Command::Backlinks => self.start_backlinks()?,
+            Command::Quit => return Ok(Action::Quit),
+        }
+        Ok(Action::Continue)
     }
 
     fn start_tag_prompt(&mut self) -> vrac::Result<()> {
@@ -1107,6 +1306,13 @@ impl App {
         self.status.clear();
     }
 
+    fn start_edit_at_start(&mut self) {
+        self.start_edit();
+        if let Some(editor) = &mut self.editor {
+            editor.cursor = 0;
+        }
+    }
+
     fn start_new_sibling(&mut self) {
         let target = match self.selected_node() {
             Some(node) => EditTarget::New {
@@ -1120,6 +1326,152 @@ impl App {
         };
         self.editor = Some(Editor::new(target, String::new(), Vec::new()));
         self.status.clear();
+    }
+
+    fn start_new_before(&mut self) {
+        let target = match self.selected_node() {
+            Some(node) => EditTarget::New {
+                parent_id: node.parent_id,
+                placement: Placement::Before(node.id),
+            },
+            None => EditTarget::New {
+                parent_id: self.focus,
+                placement: Placement::First,
+            },
+        };
+        self.editor = Some(Editor::new(target, String::new(), Vec::new()));
+        self.status.clear();
+    }
+
+    fn create_sibling_from_editor(&mut self) -> vrac::Result<()> {
+        if self.editor.as_ref().is_some_and(|editor| {
+            matches!(editor.target, EditTarget::New { .. }) && editor.text.is_empty()
+        }) {
+            return Ok(());
+        }
+        let Some(saved) = self.commit_editor()? else {
+            return Ok(());
+        };
+        self.selected = Some(saved.id);
+        self.editor = Some(Editor::new(
+            EditTarget::New {
+                parent_id: saved.parent_id,
+                placement: Placement::After(saved.id),
+            },
+            String::new(),
+            Vec::new(),
+        ));
+        self.status.clear();
+        Ok(())
+    }
+
+    fn finish_editor(&mut self) -> vrac::Result<()> {
+        if self.editor.as_ref().is_some_and(|editor| {
+            matches!(editor.target, EditTarget::New { .. }) && editor.text.is_empty()
+        }) {
+            self.editor = None;
+            self.status.clear();
+            return Ok(());
+        }
+        self.commit_editor()?;
+        self.status.clear();
+        Ok(())
+    }
+
+    fn indent_editor(&mut self) -> vrac::Result<()> {
+        if self.adjust_new_draft(true)? {
+            return Ok(());
+        }
+        let Some(saved) = self.commit_editor()? else {
+            return Ok(());
+        };
+        self.selected = Some(saved.id);
+        self.indent_selected()?;
+        self.resume_editing(saved.id)
+    }
+
+    fn outdent_editor(&mut self) -> vrac::Result<()> {
+        if self.adjust_new_draft(false)? {
+            return Ok(());
+        }
+        let Some(saved) = self.commit_editor()? else {
+            return Ok(());
+        };
+        self.selected = Some(saved.id);
+        self.outdent_selected()?;
+        self.resume_editing(saved.id)
+    }
+
+    fn adjust_new_draft(&mut self, indent: bool) -> vrac::Result<bool> {
+        let Some(editor) = self.editor.as_ref() else {
+            return Ok(false);
+        };
+        let EditTarget::New {
+            parent_id,
+            placement,
+        } = editor.target
+        else {
+            return Ok(false);
+        };
+        let next_target = if indent {
+            let previous = match placement {
+                Placement::After(id) => Some(id),
+                Placement::Last => self
+                    .branches
+                    .get(&parent_id)
+                    .and_then(|branch| branch.nodes.last())
+                    .map(|node| node.id),
+                Placement::First | Placement::Before(_) => None,
+            };
+            previous.map(|previous| EditTarget::New {
+                parent_id: Some(previous),
+                placement: Placement::Last,
+            })
+        } else if parent_id == self.focus {
+            None
+        } else {
+            match parent_id {
+                Some(parent_id) => self.engine.node(parent_id)?.map(|parent| EditTarget::New {
+                    parent_id: parent.parent_id,
+                    placement: Placement::After(parent_id),
+                }),
+                None => None,
+            }
+        };
+        let Some(next_target) = next_target else {
+            self.status = if indent {
+                "There is no previous sibling to indent under".into()
+            } else {
+                "The bullet is already at the current outline level".into()
+            };
+            return Ok(true);
+        };
+        if let EditTarget::New {
+            parent_id: Some(parent_id),
+            ..
+        } = next_target
+        {
+            self.expanded.insert(parent_id);
+        }
+        self.editor.as_mut().expect("editor is active").target = next_target;
+        self.status.clear();
+        Ok(true)
+    }
+
+    fn resume_editing(&mut self, id: NodeId) -> vrac::Result<()> {
+        let node = self.engine.node(id)?.ok_or(vrac::Error::NodeNotFound(id))?;
+        let references = node
+            .references
+            .iter()
+            .map(|reference| ReferenceInput {
+                label_start: reference.label_start,
+                label_end: reference.label_end,
+                target_id: reference.target_id,
+            })
+            .collect();
+        self.editor = Some(Editor::new(EditTarget::Existing(id), node.text, references));
+        self.status.clear();
+        Ok(())
     }
 
     fn indent_selected(&mut self) -> vrac::Result<()> {
@@ -1336,12 +1688,12 @@ impl App {
         self.status.clear();
     }
 
-    fn commit_editor(&mut self) -> vrac::Result<()> {
+    fn commit_editor(&mut self) -> vrac::Result<Option<Node>> {
         let Some(editor) = self.editor.take() else {
-            return Ok(());
+            return Ok(None);
         };
-        let result = (|| {
-            match editor.target {
+        let result = (|| -> vrac::Result<Option<Node>> {
+            match editor.target.clone() {
                 EditTarget::Existing(id) => {
                     let update = self.engine.set_content(
                         id,
@@ -1362,6 +1714,7 @@ impl App {
                         }
                     }
                     self.status = "Saved".into();
+                    Ok(Some(updated))
                 }
                 EditTarget::New {
                     parent_id,
@@ -1369,11 +1722,12 @@ impl App {
                 } => {
                     if editor.text.is_empty() {
                         self.status = "Empty node not created".into();
-                        return Ok(());
+                        return Ok(None);
                     }
                     let mut input = CreateNode::new(editor.text.clone());
                     input.parent_id = parent_id;
                     input.placement = placement;
+                    input.references = editor.references.clone();
                     let created = self.engine.create_node(input)?;
                     self.reload_branch(parent_id)?;
                     if let Some(parent_id) = parent_id {
@@ -1388,9 +1742,9 @@ impl App {
                     } else {
                         "Created after the first 100 loaded children".into()
                     };
+                    Ok(Some(created))
                 }
             }
-            Ok(())
         })();
         if result.is_err() {
             self.editor = Some(editor);
@@ -1519,13 +1873,16 @@ mod tests {
         app.engine
             .set_text(parent.id, "Vrac concept".into())
             .unwrap();
-        app.start_search();
+        app.start_search().unwrap();
         for character in "vrac".chars() {
             app.search.as_mut().unwrap().insert(character);
         }
         app.refresh_search().unwrap();
 
-        assert_eq!(app.search.as_ref().unwrap().results[0].id, parent.id);
+        assert!(matches!(
+            &app.search.as_ref().unwrap().items[0],
+            LauncherItem::Node(node) if node.id == parent.id
+        ));
         app.handle_search_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
         assert_eq!(app.focus, Some(parent.id));
@@ -1611,6 +1968,162 @@ mod tests {
             .children(Some(parent.id), Page::default())
             .unwrap();
         assert!(children.nodes.iter().any(|node| node.text == "New child"));
+    }
+
+    #[test]
+    fn enter_persists_and_continues_with_a_sibling_draft() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_edit();
+        app.editor.as_mut().unwrap().text = "Renamed".into();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(app.engine.node(parent.id).unwrap().unwrap().text, "Renamed");
+        assert_eq!(
+            app.editor.as_ref().unwrap().target,
+            EditTarget::New {
+                parent_id: None,
+                placement: Placement::After(parent.id),
+            }
+        );
+        assert_eq!(app.selected, Some(parent.id));
+    }
+
+    #[test]
+    fn tab_and_backtab_move_a_node_without_leaving_inline_editing() {
+        let (mut app, parent, _) = test_app();
+        let sibling = app.engine.create_node(CreateNode::new("Sibling")).unwrap();
+        app.reload_branch(None).unwrap();
+        app.selected = Some(sibling.id);
+        app.start_edit();
+        app.editor.as_mut().unwrap().text = "Changed".into();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(
+            app.engine.node(sibling.id).unwrap().unwrap().parent_id,
+            Some(parent.id)
+        );
+        assert!(matches!(
+            app.editor.as_ref().unwrap().target,
+            EditTarget::Existing(id) if id == sibling.id
+        ));
+        assert_eq!(app.editor.as_ref().unwrap().text, "Changed");
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT))
+            .unwrap();
+
+        assert_eq!(
+            app.engine.node(sibling.id).unwrap().unwrap().parent_id,
+            None
+        );
+        assert!(matches!(
+            app.editor.as_ref().unwrap().target,
+            EditTarget::Existing(id) if id == sibling.id
+        ));
+    }
+
+    #[test]
+    fn tab_retargets_an_uncommitted_sibling_draft() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_new_sibling();
+        app.editor.as_mut().unwrap().text = "Nested draft".into();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+
+        assert_eq!(
+            app.editor.as_ref().unwrap().target,
+            EditTarget::New {
+                parent_id: Some(parent.id),
+                placement: Placement::Last,
+            }
+        );
+        assert_eq!(
+            app.engine
+                .children(Some(parent.id), Page::default())
+                .unwrap()
+                .nodes
+                .len(),
+            1,
+            "Tab does not create the draft before Enter"
+        );
+    }
+
+    #[test]
+    fn escape_persists_text_but_discards_an_empty_draft() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_edit();
+        app.editor.as_mut().unwrap().text = "Saved on escape".into();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(app.editor.is_none());
+        assert_eq!(
+            app.engine.node(parent.id).unwrap().unwrap().text,
+            "Saved on escape"
+        );
+
+        app.start_new_sibling();
+        app.handle_editor_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.editor.is_none());
+    }
+
+    #[test]
+    fn slash_and_colon_open_the_same_launcher() {
+        let (mut app, _, _) = test_app();
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.search.as_ref().unwrap().items.iter().any(
+            |item| matches!(item, LauncherItem::Command(entry) if entry.command == Command::New)
+        ));
+        app.handle_search_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.search.as_ref().unwrap().items.iter().any(
+            |item| matches!(item, LauncherItem::Command(entry) if entry.command == Command::New)
+        ));
+    }
+
+    #[test]
+    fn insert_append_and_open_before_match_the_graphical_navigation() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.editor.as_ref().unwrap().cursor, 0);
+        app.handle_editor_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(
+            app.editor.as_ref().unwrap().cursor,
+            "Parent".chars().count()
+        );
+        app.handle_editor_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT))
+            .unwrap();
+        assert_eq!(
+            app.editor.as_ref().unwrap().target,
+            EditTarget::New {
+                parent_id: None,
+                placement: Placement::Before(parent.id),
+            }
+        );
     }
 
     #[test]

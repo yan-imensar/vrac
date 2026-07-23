@@ -9,7 +9,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vrac::{NodeId, Placement};
 
 use super::{
-    App, BacklinkView, EditTarget, Editor, ReferencePrompt, Search, TagPrompt, VisibleNode,
+    App, BacklinkView, EditTarget, Editor, LauncherItem, ReferencePrompt, Search, TagPrompt,
+    VisibleNode,
 };
 
 #[derive(Clone)]
@@ -263,7 +264,8 @@ fn draw_normal_footer(
         )?;
     }
     if height >= 1 {
-        let help = "j/k h/l  Enter/-  / search  # tag  b backlinks  i/o/c  Tab  yy/dd/p  u/^R  q";
+        let help =
+            "j/k h/l  Enter/-  / or : menu  # tag  b backlinks  i/a o/O c  Tab  yy/dd/p  u/^R  q";
         queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
@@ -284,7 +286,7 @@ fn draw_search_footer(
 ) -> io::Result<()> {
     if height >= 2 {
         let label = if status.is_empty() {
-            "SEARCH  ↑/↓ select · Enter open · Esc cancel"
+            "MENU  ↑/↓ select · Enter run/open · Esc cancel"
         } else {
             status
         };
@@ -303,7 +305,7 @@ fn draw_search_footer(
         queue!(
             stdout,
             SetForegroundColor(Color::Cyan),
-            Print("/ "),
+            Print("> "),
             ResetColor
         )?;
         queue!(stdout, Print(fit(&view, input_width)), Show)?;
@@ -327,7 +329,7 @@ fn draw_editor_status(
 ) -> io::Result<()> {
     if height >= 2 {
         let label = if status.is_empty() {
-            "EDIT  Enter save · Esc cancel"
+            "INSERT  Enter new sibling · Tab indent · Shift-Tab outdent"
         } else {
             status
         };
@@ -345,7 +347,7 @@ fn draw_editor_status(
             stdout,
             SetForegroundColor(Color::DarkGrey),
             Print(fit(
-                "←/→ move caret  Home/End  Enter save  Esc cancel",
+                "←/→ move caret  Home/End  Esc normal (changes are automatic)",
                 width
             )),
             ResetColor
@@ -452,6 +454,10 @@ fn draft_position(
     placement: Placement,
 ) -> Option<(usize, usize)> {
     match placement {
+        Placement::Before(reference) => {
+            let index = visible.iter().position(|item| item.node.id == reference)?;
+            Some((index, visible[index].depth))
+        }
         Placement::After(reference) => {
             let index = visible.iter().position(|item| item.node.id == reference)?;
             let depth = visible[index].depth;
@@ -460,6 +466,12 @@ fn draft_position(
                 insertion += 1;
             }
             Some((insertion, depth))
+        }
+        Placement::First if parent_id == focus => Some((0, 0)),
+        Placement::First => {
+            let parent = parent_id?;
+            let index = visible.iter().position(|item| item.node.id == parent)?;
+            Some((index + 1, visible[index].depth + 1))
         }
         Placement::Last if parent_id == focus => Some((visible.len(), 0)),
         Placement::Last => {
@@ -472,7 +484,6 @@ fn draft_position(
             }
             Some((insertion, depth + 1))
         }
-        Placement::First | Placement::Before(_) => None,
     }
 }
 
@@ -542,39 +553,42 @@ fn wrap_editor_text(text: &str, width: usize, cursor: usize) -> Vec<(String, Opt
 }
 
 fn search_lines(search: &Search, width: usize) -> Vec<DisplayLine> {
-    if search.results.is_empty() {
+    if search.items.is_empty() {
         return vec![DisplayLine {
             selected: false,
             cursor: None,
-            text: if search.text.trim().chars().count() < 2 {
-                "  Type at least two characters".into()
-            } else {
-                "  No results".into()
-            },
+            text: "  No results".into(),
         }];
     }
     search
-        .results
+        .items
         .iter()
         .enumerate()
-        .map(|(index, node)| {
+        .map(|(index, item)| {
             let selected = index == search.selected;
-            let tags = node
-                .tags
-                .iter()
-                .map(|tag| format!("#{tag}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let text = if tags.is_empty() {
-                node.text.replace('\n', " ↵ ")
-            } else {
-                format!("{}  {tags}", node.text.replace('\n', " ↵ "))
+            let text = match item {
+                LauncherItem::Command(entry) => {
+                    format!(":{}  — {}", entry.name, entry.hint)
+                }
+                LauncherItem::Node(node) => {
+                    let tags = node
+                        .tags
+                        .iter()
+                        .map(|tag| format!("#{tag}"))
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if tags.is_empty() {
+                        format!("• {}", node.text.replace('\n', " ↵ "))
+                    } else {
+                        format!("• {}  {tags}", node.text.replace('\n', " ↵ "))
+                    }
+                }
             };
             DisplayLine {
                 selected,
                 cursor: None,
                 text: fit(
-                    &format!("{}• {text}", if selected { "› " } else { "  " }),
+                    &format!("{}{text}", if selected { "› " } else { "  " }),
                     width,
                 ),
             }

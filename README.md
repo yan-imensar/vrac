@@ -45,16 +45,20 @@ cargo run -p vrac-tui -- /local/path/workspace.vrac
 
 Use `j`/`k` or the arrow keys to move, `h`/`l` to reach a parent or first
 child, `Space` to fold a branch, `Enter` to focus a node, and `-` to return.
-`/` opens bounded search; `#` toggles tags; `i`, `o`, and `c` edit or create
-nodes directly in the outline; `Tab` and `Shift-Tab` indent and outdent; `u`
-and `Ctrl-R` undo and redo. `yy`, `dd`, and `p` use the system clipboard and
-the engine's portable subtree format. `dd` copies successfully before deleting.
-Holding a movement key repeats it, and reaching the end of a loaded sibling
-page fetches the next page automatically. Stable references survive ordinary
-text edits; edited complete `[[labels]]` are resolved again by the engine.
-`b` lists contextual backlink paths and opens their matching nodes. While
-editing an existing node, `[[` opens stable-reference completion and `#` opens
-tag completion. Configuration remains future work.
+`/` and `:` open one launcher containing commands and bounded node search; `#`
+toggles tags; `i`, `o`, and `c` edit or create nodes directly in the outline.
+While editing, `Enter` persists the current text and immediately starts the
+next sibling, while `Tab` and `Shift-Tab` indent and outdent without leaving
+the inline editor. `Esc` returns to navigation with non-empty changes already
+persisted, so there is no separate save action. `u` and `Ctrl-R` undo and redo.
+`yy`, `dd`, and `p` use the system clipboard and the engine's portable subtree
+format. `dd` copies successfully before deleting. Holding a movement key
+repeats it, and reaching the end of a loaded sibling page fetches the next page
+automatically. Stable references survive ordinary text edits; edited complete
+`[[labels]]` are resolved again by the engine. `b` lists contextual backlink
+paths and opens their matching nodes. While editing an existing node, `[[`
+opens stable-reference completion and `#` opens tag completion. Configuration
+remains future work.
 
 ## Performance scenario
 
