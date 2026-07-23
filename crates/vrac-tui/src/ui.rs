@@ -397,10 +397,10 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
             |editor| matches!(editor.target, EditTarget::Existing(id) if id == item.node.id),
         );
         if let Some(editor) = editing {
-            for (line_index, (content, cursor)) in
-                wrap_editor_text(&editor.text, available, editor.cursor)
-                    .into_iter()
-                    .enumerate()
+            let text = editor_text(editor);
+            for (line_index, (content, cursor)) in wrap_editor_text(&text, available, editor.cursor)
+                .into_iter()
+                .enumerate()
             {
                 let line_prefix = if line_index == 0 {
                     &prefix
@@ -493,7 +493,7 @@ fn editor_lines(editor: &Editor, depth: usize, width: usize) -> Vec<DisplayLine>
     let available = width
         .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
         .max(1);
-    wrap_editor_text(&editor.text, available, editor.cursor)
+    wrap_editor_text(&editor_text(editor), available, editor.cursor)
         .into_iter()
         .enumerate()
         .map(|(index, (content, cursor))| {
@@ -505,6 +505,19 @@ fn editor_lines(editor: &Editor, depth: usize, width: usize) -> Vec<DisplayLine>
             }
         })
         .collect()
+}
+
+fn editor_text(editor: &Editor) -> String {
+    if editor.tags.is_empty() {
+        return editor.text.clone();
+    }
+    let tags = editor
+        .tags
+        .iter()
+        .map(|tag| format!("#{tag}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{}  {tags}", editor.text)
 }
 
 fn wrap_editor_text(text: &str, width: usize, cursor: usize) -> Vec<(String, Option<usize>)> {

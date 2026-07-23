@@ -56,9 +56,10 @@ format. `dd` copies successfully before deleting. Holding a movement key
 repeats it, and reaching the end of a loaded sibling page fetches the next page
 automatically. Stable references survive ordinary text edits; edited complete
 `[[labels]]` are resolved again by the engine. `b` lists contextual backlink
-paths and opens their matching nodes. While editing an existing node, `[[`
-opens stable-reference completion and `#` opens tag completion. Configuration
-remains future work.
+paths and opens their matching nodes. While editing any existing or new bullet,
+`[[` opens stable-reference completion and `#` opens tag completion. Tags
+selected on a draft are created atomically with its text. Configuration remains
+future work.
 
 ## Performance scenario
 

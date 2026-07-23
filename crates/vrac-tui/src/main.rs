@@ -135,6 +135,7 @@ struct Editor {
     text: String,
     cursor: usize,
     references: Vec<ReferenceInput>,
+    tags: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -287,10 +288,16 @@ struct Search {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct TagPrompt {
-    target_id: NodeId,
+    target: TagTarget,
     query: String,
     results: Vec<String>,
     selected: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TagTarget {
+    Node(NodeId),
+    Draft,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -345,14 +352,24 @@ impl Search {
 }
 
 impl Editor {
-    fn new(target: EditTarget, text: String, references: Vec<ReferenceInput>) -> Self {
+    fn new(
+        target: EditTarget,
+        text: String,
+        references: Vec<ReferenceInput>,
+        tags: Vec<String>,
+    ) -> Self {
         let cursor = text.chars().count();
         Self {
             target,
             text,
             cursor,
             references,
+            tags,
         }
+    }
+
+    fn empty(target: EditTarget) -> Self {
+        Self::new(target, String::new(), Vec::new(), Vec::new())
     }
 
     fn insert(&mut self, character: char) {
@@ -883,11 +900,12 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                if character == '#'
-                    && let EditTarget::Existing(target_id) =
-                        self.editor.as_ref().expect("editor is active").target
-                {
-                    self.open_tag_prompt(target_id)?;
+                if character == '#' {
+                    let target = match self.editor.as_ref().expect("editor is active").target {
+                        EditTarget::Existing(id) => TagTarget::Node(id),
+                        EditTarget::New { .. } => TagTarget::Draft,
+                    };
+                    self.open_tag_prompt(target)?;
                     return Ok(Action::Continue);
                 }
                 let editor = self.editor.as_mut().expect("editor is active");
@@ -1113,13 +1131,13 @@ impl App {
                 }
             },
         };
-        self.open_tag_prompt(target_id)
+        self.open_tag_prompt(TagTarget::Node(target_id))
     }
 
-    fn open_tag_prompt(&mut self, target_id: NodeId) -> vrac::Result<()> {
+    fn open_tag_prompt(&mut self, target: TagTarget) -> vrac::Result<()> {
         let results = self.engine.tags("", 20)?;
         self.tag_prompt = Some(TagPrompt {
-            target_id,
+            target,
             query: String::new(),
             results,
             selected: 0,
@@ -1157,11 +1175,20 @@ impl App {
             self.tag_prompt = Some(prompt);
             return Ok(());
         };
-        let node = self
-            .engine
-            .node(prompt.target_id)?
-            .ok_or(vrac::Error::NodeNotFound(prompt.target_id))?;
-        let mut tags = node.tags;
+        let mut tags = match prompt.target {
+            TagTarget::Node(id) => {
+                self.engine
+                    .node(id)?
+                    .ok_or(vrac::Error::NodeNotFound(id))?
+                    .tags
+            }
+            TagTarget::Draft => self
+                .editor
+                .as_ref()
+                .expect("a draft tag prompt has an editor")
+                .tags
+                .clone(),
+        };
         let removed = if let Some(index) = tags.iter().position(|existing| existing == &tag) {
             tags.remove(index);
             true
@@ -1169,11 +1196,24 @@ impl App {
             tags.push(tag.clone());
             false
         };
-        if let Err(error) = self.engine.set_tags(prompt.target_id, tags) {
-            self.tag_prompt = Some(prompt);
-            return Err(error);
+        match prompt.target {
+            TagTarget::Node(id) => {
+                if let Err(error) = self.engine.set_tags(id, tags.clone()) {
+                    self.tag_prompt = Some(prompt);
+                    return Err(error);
+                }
+                self.refresh_cached_node(id)?;
+                if let Some(editor) = &mut self.editor {
+                    editor.tags = tags;
+                }
+            }
+            TagTarget::Draft => {
+                self.editor
+                    .as_mut()
+                    .expect("a draft tag prompt has an editor")
+                    .tags = tags;
+            }
         }
-        self.refresh_cached_node(prompt.target_id)?;
         self.status = if removed {
             format!("Removed #{tag}")
         } else {
@@ -1302,6 +1342,7 @@ impl App {
             EditTarget::Existing(node.id),
             node.text,
             references,
+            node.tags,
         ));
         self.status.clear();
     }
@@ -1324,7 +1365,7 @@ impl App {
                 placement: Placement::Last,
             },
         };
-        self.editor = Some(Editor::new(target, String::new(), Vec::new()));
+        self.editor = Some(Editor::empty(target));
         self.status.clear();
     }
 
@@ -1339,7 +1380,7 @@ impl App {
                 placement: Placement::First,
             },
         };
-        self.editor = Some(Editor::new(target, String::new(), Vec::new()));
+        self.editor = Some(Editor::empty(target));
         self.status.clear();
     }
 
@@ -1353,14 +1394,10 @@ impl App {
             return Ok(());
         };
         self.selected = Some(saved.id);
-        self.editor = Some(Editor::new(
-            EditTarget::New {
-                parent_id: saved.parent_id,
-                placement: Placement::After(saved.id),
-            },
-            String::new(),
-            Vec::new(),
-        ));
+        self.editor = Some(Editor::empty(EditTarget::New {
+            parent_id: saved.parent_id,
+            placement: Placement::After(saved.id),
+        }));
         self.status.clear();
         Ok(())
     }
@@ -1469,7 +1506,12 @@ impl App {
                 target_id: reference.target_id,
             })
             .collect();
-        self.editor = Some(Editor::new(EditTarget::Existing(id), node.text, references));
+        self.editor = Some(Editor::new(
+            EditTarget::Existing(id),
+            node.text,
+            references,
+            node.tags,
+        ));
         self.status.clear();
         Ok(())
     }
@@ -1677,14 +1719,10 @@ impl App {
         let Some(node) = self.selected_node() else {
             return;
         };
-        self.editor = Some(Editor::new(
-            EditTarget::New {
-                parent_id: Some(node.id),
-                placement: Placement::Last,
-            },
-            String::new(),
-            Vec::new(),
-        ));
+        self.editor = Some(Editor::empty(EditTarget::New {
+            parent_id: Some(node.id),
+            placement: Placement::Last,
+        }));
         self.status.clear();
     }
 
@@ -1728,6 +1766,7 @@ impl App {
                     input.parent_id = parent_id;
                     input.placement = placement;
                     input.references = editor.references.clone();
+                    input.tags = editor.tags.clone();
                     let created = self.engine.create_node(input)?;
                     self.reload_branch(parent_id)?;
                     if let Some(parent_id) = parent_id {
@@ -1780,6 +1819,7 @@ mod tests {
                 placement: Placement::Last,
             },
             "été".into(),
+            Vec::new(),
             Vec::new(),
         );
         editor.cursor = 1;
@@ -1908,8 +1948,45 @@ mod tests {
         app.start_edit();
         app.handle_editor_key(KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE))
             .unwrap();
-        assert_eq!(app.tag_prompt.as_ref().unwrap().target_id, parent.id);
+        assert_eq!(
+            app.tag_prompt.as_ref().unwrap().target,
+            TagTarget::Node(parent.id)
+        );
         assert_eq!(app.editor.as_ref().unwrap().text, "Parent");
+    }
+
+    #[test]
+    fn inline_tag_completion_is_kept_on_a_new_draft() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_new_sibling();
+        app.editor.as_mut().unwrap().text = "Tagged draft".into();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.tag_prompt.as_ref().unwrap().target, TagTarget::Draft);
+        app.tag_prompt.as_mut().unwrap().query = "task".into();
+        app.refresh_tag_prompt().unwrap();
+        app.commit_tag_prompt().unwrap();
+
+        assert_eq!(app.editor.as_ref().unwrap().tags, ["task"]);
+        assert!(
+            display_lines(&app, 80)
+                .iter()
+                .any(|line| line.text.contains("#task"))
+        );
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        let created = app
+            .engine
+            .children(None, Page::default())
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find(|node| node.text == "Tagged draft")
+            .unwrap();
+        assert_eq!(created.tags, ["task"]);
     }
 
     #[test]
