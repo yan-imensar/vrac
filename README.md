@@ -34,10 +34,10 @@ Build the optimized CLI with:
 cargo build --release -p vrac-cli
 ```
 
-## Terminal prototype
+## Terminal client
 
-The experimental terminal outliner opens an ordinary local `.vrac` database
-through the public engine API:
+The terminal outliner opens an ordinary local `.vrac` database through the
+public engine API and starts on today's Journal page:
 
 ```sh
 cargo run -p vrac-tui -- /local/path/workspace.vrac
@@ -45,13 +45,16 @@ cargo run -p vrac-tui -- /local/path/workspace.vrac
 
 Use `j`/`k` or the arrow keys to move, `h`/`l` to reach a parent or first
 child, `Space` to fold a branch, `Enter` to focus a node, and `-` to return.
-`/` opens bounded search; `i`, `o`, and `c` edit or create nodes; `Tab` and
-`Shift-Tab` indent and outdent; `u` and `Ctrl-R` undo and redo. Holding a
-movement key repeats it, and reaching the end of a loaded sibling page fetches
-the next page automatically. Stable references survive ordinary text edits;
-edited complete `[[labels]]` are resolved again by the engine. The prototype
-intentionally omits backlinks, clipboard commands, deletion, tag editing, and
-configuration.
+`/` opens bounded search; `#` toggles tags; `i`, `o`, and `c` edit or create
+nodes directly in the outline; `Tab` and `Shift-Tab` indent and outdent; `u`
+and `Ctrl-R` undo and redo. `yy`, `dd`, and `p` use the system clipboard and
+the engine's portable subtree format. `dd` copies successfully before deleting.
+Holding a movement key repeats it, and reaching the end of a loaded sibling
+page fetches the next page automatically. Stable references survive ordinary
+text edits; edited complete `[[labels]]` are resolved again by the engine.
+`b` lists contextual backlink paths and opens their matching nodes. While
+editing an existing node, `[[` opens stable-reference completion and `#` opens
+tag completion. Configuration remains future work.
 
 ## Performance scenario
 

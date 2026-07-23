@@ -1,19 +1,24 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::io::{self, Stdout, Write};
-use std::path::{Path, PathBuf};
+use std::io::{self, Stdout};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
-use crossterm::cursor::{Hide, MoveTo, Show};
+use arboard::Clipboard;
+use crossterm::cursor::{Hide, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
-use crossterm::queue;
-use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
-use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use crossterm::style::{Attribute, ResetColor, SetAttribute};
+use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use vrac::{
     CreateNode, Cursor, Destination, Engine, Node, NodeId, Page, Placement, ReferenceInput,
 };
+
+mod ui;
+
+use ui::draw;
+#[cfg(test)]
+use ui::{display_lines, wrap_text};
 
 const USAGE: &str = "Usage: vrac-tui <workspace.vrac>";
 
@@ -140,6 +145,29 @@ struct Search {
     selected: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TagPrompt {
+    target_id: NodeId,
+    query: String,
+    results: Vec<String>,
+    selected: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct BacklinkView {
+    target_id: NodeId,
+    contexts: Vec<Vec<Node>>,
+    next: Option<Cursor>,
+    selected: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ReferencePrompt {
+    query: String,
+    results: Vec<Node>,
+    selected: usize,
+}
+
 impl Search {
     fn new() -> Self {
         Self {
@@ -253,28 +281,46 @@ struct App {
     selected: Option<NodeId>,
     editor: Option<Editor>,
     search: Option<Search>,
+    tag_prompt: Option<TagPrompt>,
+    backlinks: Option<BacklinkView>,
+    reference_prompt: Option<ReferencePrompt>,
+    pending_key: Option<char>,
     status: String,
     scroll: usize,
 }
 
 impl App {
-    fn open(engine: Engine) -> vrac::Result<Self> {
+    fn open(mut engine: Engine) -> vrac::Result<Self> {
+        let today = jiff::Zoned::now().date().to_string();
+        let day = engine.journal_day(&today)?;
+        Self::open_with_focus(engine, Some(day.id))
+    }
+
+    fn open_with_focus(engine: Engine, focus: Option<NodeId>) -> vrac::Result<Self> {
         let mut app = Self {
             engine,
             branches: HashMap::new(),
             expanded: HashSet::new(),
-            focus: None,
+            focus,
             focus_path: Vec::new(),
             selected: None,
             editor: None,
             search: None,
+            tag_prompt: None,
+            backlinks: None,
+            reference_prompt: None,
+            pending_key: None,
             status: String::new(),
             scroll: 0,
         };
-        app.reload_branch(None)?;
+        app.reload_branch(focus)?;
+        app.focus_path = match focus {
+            Some(id) => app.engine.path(id)?,
+            None => Vec::new(),
+        };
         app.selected = app
             .branches
-            .get(&None)
+            .get(&focus)
             .and_then(|branch| branch.nodes.first())
             .map(|node| node.id);
         Ok(app)
@@ -409,7 +455,13 @@ impl App {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return Ok(Action::Quit);
         }
-        if self.search.is_some() {
+        if self.reference_prompt.is_some() {
+            self.handle_reference_key(key)
+        } else if self.backlinks.is_some() {
+            self.handle_backlink_key(key)
+        } else if self.tag_prompt.is_some() {
+            self.handle_tag_key(key)
+        } else if self.search.is_some() {
             self.handle_search_key(key)
         } else if self.editor.is_some() {
             self.handle_editor_key(key)
@@ -419,6 +471,16 @@ impl App {
     }
 
     fn handle_normal_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+        if let Some(pending) = self.pending_key.take()
+            && key.code == KeyCode::Char(pending)
+        {
+            match pending {
+                'y' => self.copy_selected()?,
+                'd' => self.delete_selected()?,
+                _ => unreachable!("only known prefixes are retained"),
+            }
+            return Ok(Action::Continue);
+        }
         match key.code {
             KeyCode::Char('q') => return Ok(Action::Quit),
             KeyCode::Char('j') | KeyCode::Down => self.move_selection(1)?,
@@ -439,9 +501,20 @@ impl App {
             KeyCode::Enter => self.zoom_selected()?,
             KeyCode::Backspace | KeyCode::Char('-') => self.zoom_out()?,
             KeyCode::Char('/') => self.start_search(),
+            KeyCode::Char('#') => self.start_tag_prompt()?,
+            KeyCode::Char('b') => self.start_backlinks()?,
             KeyCode::Char('i') => self.start_edit(),
             KeyCode::Char('o') => self.start_new_sibling(),
             KeyCode::Char('c') => self.start_new_child(),
+            KeyCode::Char('y') => {
+                self.pending_key = Some('y');
+                self.status = "y".into();
+            }
+            KeyCode::Char('d') => {
+                self.pending_key = Some('d');
+                self.status = "d".into();
+            }
+            KeyCode::Char('p') => self.paste_after_selected()?,
             KeyCode::Tab => self.indent_selected()?,
             KeyCode::BackTab => self.outdent_selected()?,
             KeyCode::Char('u') => self.undo()?,
@@ -513,6 +586,144 @@ impl App {
         Ok(Action::Continue)
     }
 
+    fn handle_tag_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+        match key.code {
+            KeyCode::Esc => {
+                self.tag_prompt = None;
+                self.status.clear();
+                self.scroll = 0;
+            }
+            KeyCode::Enter => self.commit_tag_prompt()?,
+            KeyCode::Up => {
+                let prompt = self.tag_prompt.as_mut().expect("tag prompt is active");
+                prompt.selected = prompt.selected.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                let prompt = self.tag_prompt.as_mut().expect("tag prompt is active");
+                prompt.selected = (prompt.selected + 1).min(prompt.results.len().saturating_sub(1));
+            }
+            KeyCode::Backspace => {
+                self.tag_prompt
+                    .as_mut()
+                    .expect("tag prompt is active")
+                    .query
+                    .pop();
+                self.refresh_tag_prompt()?;
+            }
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.tag_prompt
+                    .as_mut()
+                    .expect("tag prompt is active")
+                    .query
+                    .push(character);
+                self.refresh_tag_prompt()?;
+            }
+            _ => {}
+        }
+        Ok(Action::Continue)
+    }
+
+    fn handle_backlink_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('b') => {
+                self.backlinks = None;
+                self.status.clear();
+                self.scroll = 0;
+            }
+            KeyCode::Enter => {
+                let target = self.backlinks.as_ref().and_then(|view| {
+                    view.contexts
+                        .get(view.selected)
+                        .and_then(|path| path.last())
+                        .map(|node| node.id)
+                });
+                self.backlinks = None;
+                if let Some(target) = target {
+                    self.set_focus(Some(target))?;
+                }
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let view = self.backlinks.as_mut().expect("backlinks are active");
+                view.selected = view.selected.saturating_sub(1);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.load_more_backlinks_if_needed()?;
+                let view = self.backlinks.as_mut().expect("backlinks are active");
+                view.selected = (view.selected + 1).min(view.contexts.len().saturating_sub(1));
+            }
+            _ => {}
+        }
+        Ok(Action::Continue)
+    }
+
+    fn handle_reference_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+        match key.code {
+            KeyCode::Esc => {
+                self.reference_prompt = None;
+                self.status.clear();
+            }
+            KeyCode::Enter => self.commit_reference_prompt(),
+            KeyCode::Up => {
+                let prompt = self
+                    .reference_prompt
+                    .as_mut()
+                    .expect("reference prompt is active");
+                prompt.selected = prompt.selected.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                let prompt = self
+                    .reference_prompt
+                    .as_mut()
+                    .expect("reference prompt is active");
+                prompt.selected = (prompt.selected + 1).min(prompt.results.len().saturating_sub(1));
+            }
+            KeyCode::Backspace => {
+                let empty = self
+                    .reference_prompt
+                    .as_ref()
+                    .expect("reference prompt is active")
+                    .query
+                    .is_empty();
+                self.editor
+                    .as_mut()
+                    .expect("reference completion edits a node")
+                    .backspace();
+                if empty {
+                    self.reference_prompt = None;
+                } else {
+                    self.reference_prompt
+                        .as_mut()
+                        .expect("reference prompt is active")
+                        .query
+                        .pop();
+                    self.refresh_reference_prompt()?;
+                }
+            }
+            KeyCode::Char(character)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.editor
+                    .as_mut()
+                    .expect("reference completion edits a node")
+                    .insert(character);
+                self.reference_prompt
+                    .as_mut()
+                    .expect("reference prompt is active")
+                    .query
+                    .push(character);
+                self.refresh_reference_prompt()?;
+            }
+            _ => {}
+        }
+        Ok(Action::Continue)
+    }
+
     fn handle_editor_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
         match key.code {
             KeyCode::Esc => {
@@ -540,10 +751,24 @@ impl App {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
-                self.editor
-                    .as_mut()
-                    .expect("editor is active")
-                    .insert(character);
+                if character == '#'
+                    && let EditTarget::Existing(target_id) =
+                        self.editor.as_ref().expect("editor is active").target
+                {
+                    self.open_tag_prompt(target_id)?;
+                    return Ok(Action::Continue);
+                }
+                let editor = self.editor.as_mut().expect("editor is active");
+                editor.insert(character);
+                let before_caret: String = editor.text.chars().take(editor.cursor).collect();
+                if character == '[' && before_caret.ends_with("[[") {
+                    self.reference_prompt = Some(ReferencePrompt {
+                        query: String::new(),
+                        results: Vec::new(),
+                        selected: 0,
+                    });
+                    self.status.clear();
+                }
             }
             _ => {}
         }
@@ -676,6 +901,185 @@ impl App {
         search.selected = search.selected.min(search.results.len().saturating_sub(1));
         self.status.clear();
         Ok(())
+    }
+
+    fn start_tag_prompt(&mut self) -> vrac::Result<()> {
+        let target_id = match self.selected {
+            Some(id) => id,
+            None => match self.focus {
+                Some(id) => id,
+                None => {
+                    self.status = "No node is selected".into();
+                    return Ok(());
+                }
+            },
+        };
+        self.open_tag_prompt(target_id)
+    }
+
+    fn open_tag_prompt(&mut self, target_id: NodeId) -> vrac::Result<()> {
+        let results = self.engine.tags("", 20)?;
+        self.tag_prompt = Some(TagPrompt {
+            target_id,
+            query: String::new(),
+            results,
+            selected: 0,
+        });
+        self.status.clear();
+        self.scroll = 0;
+        Ok(())
+    }
+
+    fn refresh_tag_prompt(&mut self) -> vrac::Result<()> {
+        let query = self
+            .tag_prompt
+            .as_ref()
+            .expect("tag prompt is active")
+            .query
+            .clone();
+        let mut results = self.engine.tags(&query, 20)?;
+        let typed = query.trim();
+        if !typed.is_empty() && !results.iter().any(|tag| tag == typed) {
+            results.insert(0, typed.into());
+        }
+        let prompt = self.tag_prompt.as_mut().expect("tag prompt is active");
+        prompt.results = results;
+        prompt.selected = prompt.selected.min(prompt.results.len().saturating_sub(1));
+        self.status.clear();
+        Ok(())
+    }
+
+    fn commit_tag_prompt(&mut self) -> vrac::Result<()> {
+        let Some(prompt) = self.tag_prompt.take() else {
+            return Ok(());
+        };
+        let Some(tag) = prompt.results.get(prompt.selected).cloned() else {
+            self.status = "Type a tag first".into();
+            self.tag_prompt = Some(prompt);
+            return Ok(());
+        };
+        let node = self
+            .engine
+            .node(prompt.target_id)?
+            .ok_or(vrac::Error::NodeNotFound(prompt.target_id))?;
+        let mut tags = node.tags;
+        let removed = if let Some(index) = tags.iter().position(|existing| existing == &tag) {
+            tags.remove(index);
+            true
+        } else {
+            tags.push(tag.clone());
+            false
+        };
+        if let Err(error) = self.engine.set_tags(prompt.target_id, tags) {
+            self.tag_prompt = Some(prompt);
+            return Err(error);
+        }
+        self.refresh_cached_node(prompt.target_id)?;
+        self.status = if removed {
+            format!("Removed #{tag}")
+        } else {
+            format!("Added #{tag}")
+        };
+        Ok(())
+    }
+
+    fn start_backlinks(&mut self) -> vrac::Result<()> {
+        let target_id = match self.selected.or(self.focus) {
+            Some(id) => id,
+            None => {
+                self.status = "No node is selected".into();
+                return Ok(());
+            }
+        };
+        let page = self.engine.backlinks(target_id, None, Page::default())?;
+        self.backlinks = Some(BacklinkView {
+            target_id,
+            contexts: page
+                .contexts
+                .into_iter()
+                .map(|context| context.path)
+                .collect(),
+            next: page.next,
+            selected: 0,
+        });
+        self.status.clear();
+        self.scroll = 0;
+        Ok(())
+    }
+
+    fn load_more_backlinks_if_needed(&mut self) -> vrac::Result<()> {
+        let Some(view) = self.backlinks.as_ref() else {
+            return Ok(());
+        };
+        if view.selected + 1 < view.contexts.len() {
+            return Ok(());
+        }
+        let Some(after) = view.next else {
+            return Ok(());
+        };
+        let target_id = view.target_id;
+        let page = self.engine.backlinks(
+            target_id,
+            None,
+            Page {
+                limit: Page::default().limit,
+                after: Some(after),
+            },
+        )?;
+        let view = self.backlinks.as_mut().expect("backlinks are active");
+        view.contexts
+            .extend(page.contexts.into_iter().map(|context| context.path));
+        view.next = page.next;
+        Ok(())
+    }
+
+    fn refresh_reference_prompt(&mut self) -> vrac::Result<()> {
+        let query = self
+            .reference_prompt
+            .as_ref()
+            .expect("reference prompt is active")
+            .query
+            .clone();
+        let results = self.engine.search(&query, 8)?;
+        let prompt = self
+            .reference_prompt
+            .as_mut()
+            .expect("reference prompt is active");
+        prompt.results = results;
+        prompt.selected = prompt.selected.min(prompt.results.len().saturating_sub(1));
+        self.status.clear();
+        Ok(())
+    }
+
+    fn commit_reference_prompt(&mut self) {
+        let Some(prompt) = self.reference_prompt.take() else {
+            return;
+        };
+        let editor = self
+            .editor
+            .as_mut()
+            .expect("reference completion edits a node");
+        if let Some(target) = prompt.results.get(prompt.selected) {
+            for _ in 0..prompt.query.chars().count() {
+                editor.backspace();
+            }
+            let label_start = char_to_byte(&editor.text, editor.cursor);
+            for character in target.text.chars() {
+                editor.insert(character);
+            }
+            let label_end = char_to_byte(&editor.text, editor.cursor);
+            editor.insert(']');
+            editor.insert(']');
+            editor.references.push(ReferenceInput {
+                label_start,
+                label_end,
+                target_id: target.id,
+            });
+        } else {
+            editor.insert(']');
+            editor.insert(']');
+        }
+        self.status.clear();
     }
 
     fn start_edit(&mut self) {
@@ -821,6 +1225,102 @@ impl App {
         self.set_focus(focus)
     }
 
+    fn copy_selected(&mut self) -> vrac::Result<()> {
+        let Some(node) = self.selected_node() else {
+            return Ok(());
+        };
+        let text = self.engine.copy_nodes(&[node.id])?;
+        match Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)) {
+            Ok(()) => self.status = "Copied subtree".into(),
+            Err(error) => self.status = format!("Clipboard error: {error}"),
+        }
+        Ok(())
+    }
+
+    fn delete_selected(&mut self) -> vrac::Result<()> {
+        let Some(node) = self.selected_node() else {
+            return Ok(());
+        };
+        if node.system.is_some() {
+            self.status = "Protected Journal nodes cannot be deleted".into();
+            return Ok(());
+        }
+        let before = self.visible_nodes();
+        let index = before
+            .iter()
+            .position(|item| item.node.id == node.id)
+            .unwrap_or_default();
+        let text = self.engine.copy_nodes(&[node.id])?;
+        if let Err(error) = Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text)) {
+            self.status = format!("Delete cancelled: clipboard error: {error}");
+            return Ok(());
+        }
+
+        let outcome = self.engine.delete_node(node.id)?;
+        self.reload_branch(node.parent_id)?;
+        if let Some(parent_id) = node.parent_id {
+            self.refresh_cached_node(parent_id)?;
+        }
+        self.branches.remove(&Some(node.id));
+        self.expanded.remove(&node.id);
+        for pruned in outcome.pruned_roots {
+            self.branches.remove(&Some(pruned));
+            self.expanded.remove(&pruned);
+        }
+        if self.branches.contains_key(&None) {
+            self.reload_branch(None)?;
+        }
+        let after = self.visible_nodes();
+        self.selected = after
+            .get(index.min(after.len().saturating_sub(1)))
+            .map(|item| item.node.id);
+        self.status = format!("Deleted {} node(s); subtree copied", outcome.deleted_nodes);
+        Ok(())
+    }
+
+    fn paste_after_selected(&mut self) -> vrac::Result<()> {
+        let text = match Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+            Ok(text) => text,
+            Err(error) => {
+                self.status = format!("Clipboard error: {error}");
+                return Ok(());
+            }
+        };
+        let (parent_id, placement) = match self.selected_node() {
+            Some(node) => (node.parent_id, Placement::After(node.id)),
+            None => (self.focus, Placement::Last),
+        };
+        let created = self.engine.paste_nodes(
+            Destination {
+                parent_id,
+                placement,
+            },
+            &text,
+        )?;
+        self.reload_branch(parent_id)?;
+        if let Some(parent_id) = parent_id {
+            self.refresh_cached_node(parent_id)?;
+        }
+        if parent_id.is_some() && self.branches.contains_key(&None) {
+            self.reload_branch(None)?;
+        }
+        self.selected = created.first().map(|node| node.id).or(parent_id);
+        self.status = format!("Pasted {} subtree(s)", created.len());
+        Ok(())
+    }
+
+    fn refresh_cached_node(&mut self, id: NodeId) -> vrac::Result<()> {
+        let Some(updated) = self.engine.node(id)? else {
+            return Ok(());
+        };
+        for branch in self.branches.values_mut() {
+            if let Some(node) = branch.nodes.iter_mut().find(|node| node.id == id) {
+                *node = updated.clone();
+            }
+        }
+        Ok(())
+    }
+
     fn start_new_child(&mut self) {
         let Some(node) = self.selected_node() else {
             return;
@@ -899,374 +1399,6 @@ impl App {
     }
 }
 
-#[derive(Clone)]
-struct DisplayLine {
-    selected: bool,
-    text: String,
-}
-
-fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Result<()> {
-    let (width, height) = terminal::size()?;
-    let width = usize::from(width);
-    let height = usize::from(height);
-    let body_height = height.saturating_sub(4);
-    let lines = match &app.search {
-        Some(search) => search_lines(search, width),
-        None => display_lines(app, width),
-    };
-    let selected_start = lines
-        .iter()
-        .position(|line| line.selected)
-        .unwrap_or_default();
-    let selected_end = lines
-        .iter()
-        .rposition(|line| line.selected)
-        .unwrap_or(selected_start);
-    if selected_start < app.scroll {
-        app.scroll = selected_start;
-    } else if body_height > 0 && selected_end >= app.scroll + body_height {
-        let selection_height = selected_end + 1 - selected_start;
-        app.scroll = if selection_height > body_height {
-            selected_start
-        } else {
-            selected_end + 1 - body_height
-        };
-    }
-    app.scroll = app.scroll.min(lines.len().saturating_sub(body_height));
-
-    queue!(stdout, Hide, MoveTo(0, 0), Clear(ClearType::All))?;
-    queue!(
-        stdout,
-        SetForegroundColor(Color::Cyan),
-        SetAttribute(Attribute::Bold),
-        Print(fit(
-            &format!(
-                "Vrac TUI  {}",
-                path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into()
-                )
-            ),
-            width
-        )),
-        SetAttribute(Attribute::Reset),
-        ResetColor
-    )?;
-    if height > 1 {
-        queue!(stdout, MoveTo(0, 1), SetForegroundColor(Color::DarkGrey))?;
-        queue!(stdout, Print(fit(&app.focus_label(), width)), ResetColor)?;
-    }
-
-    for (offset, line) in lines.iter().skip(app.scroll).take(body_height).enumerate() {
-        queue!(
-            stdout,
-            MoveTo(0, u16::try_from(offset + 2).unwrap_or(u16::MAX))
-        )?;
-        if line.selected {
-            queue!(
-                stdout,
-                SetForegroundColor(Color::Cyan),
-                SetAttribute(Attribute::Bold)
-            )?;
-        }
-        queue!(stdout, Print(fit(&line.text, width)))?;
-        if line.selected {
-            queue!(stdout, SetAttribute(Attribute::Reset), ResetColor)?;
-        }
-    }
-
-    if let Some(search) = &app.search {
-        draw_search_footer(stdout, search, &app.status, width, height)?;
-    } else if let Some(editor) = &app.editor {
-        draw_editor(stdout, editor, &app.status, width, height)?;
-    } else {
-        draw_normal_footer(stdout, &app.status, width, height)?;
-    }
-    stdout.flush()
-}
-
-fn draw_normal_footer(
-    stdout: &mut Stdout,
-    status: &str,
-    width: usize,
-    height: usize,
-) -> io::Result<()> {
-    if height >= 2 {
-        queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
-        queue!(
-            stdout,
-            SetForegroundColor(Color::Yellow),
-            Print(fit(status, width)),
-            ResetColor
-        )?;
-    }
-    if height >= 1 {
-        let help =
-            "j/k move  h/l parent/child  Enter zoom  - back  / search  i edit  Tab indent  q quit";
-        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
-        queue!(
-            stdout,
-            SetForegroundColor(Color::DarkGrey),
-            Print(fit(help, width)),
-            ResetColor
-        )?;
-    }
-    Ok(())
-}
-
-fn draw_search_footer(
-    stdout: &mut Stdout,
-    search: &Search,
-    status: &str,
-    width: usize,
-    height: usize,
-) -> io::Result<()> {
-    if height >= 2 {
-        let label = if status.is_empty() {
-            "SEARCH  ↑/↓ select · Enter open · Esc cancel"
-        } else {
-            status
-        };
-        queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
-        queue!(
-            stdout,
-            SetForegroundColor(Color::Yellow),
-            Print(fit(label, width)),
-            ResetColor
-        )?;
-    }
-    if height >= 1 {
-        let input_width = width.saturating_sub(2);
-        let (view, cursor_column) = editor_view(&search.text, search.cursor, input_width);
-        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
-        queue!(
-            stdout,
-            SetForegroundColor(Color::Cyan),
-            Print("/ "),
-            ResetColor
-        )?;
-        queue!(stdout, Print(fit(&view, input_width)), Show)?;
-        let column = (2 + cursor_column).min(width.saturating_sub(1));
-        queue!(
-            stdout,
-            MoveTo(
-                u16::try_from(column).unwrap_or(u16::MAX),
-                u16::try_from(height - 1).unwrap_or(0)
-            )
-        )?;
-    }
-    Ok(())
-}
-
-fn draw_editor(
-    stdout: &mut Stdout,
-    editor: &Editor,
-    status: &str,
-    width: usize,
-    height: usize,
-) -> io::Result<()> {
-    if height >= 2 {
-        let label = if status.is_empty() {
-            match editor.target {
-                EditTarget::Existing(_) => "EDIT  Enter save · Esc cancel",
-                EditTarget::New { .. } => "NEW   Enter create · Esc cancel",
-            }
-        } else {
-            status
-        };
-        queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
-        queue!(
-            stdout,
-            SetForegroundColor(Color::Yellow),
-            Print(fit(label, width)),
-            ResetColor
-        )?;
-    }
-    if height >= 1 {
-        let input_width = width.saturating_sub(2);
-        let (view, cursor_column) = editor_view(&editor.text, editor.cursor, input_width);
-        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
-        queue!(
-            stdout,
-            SetForegroundColor(Color::Cyan),
-            Print("> "),
-            ResetColor
-        )?;
-        queue!(stdout, Print(fit(&view, input_width)), Show)?;
-        let column = (2 + cursor_column).min(width.saturating_sub(1));
-        queue!(
-            stdout,
-            MoveTo(
-                u16::try_from(column).unwrap_or(u16::MAX),
-                u16::try_from(height - 1).unwrap_or(0)
-            )
-        )?;
-    }
-    Ok(())
-}
-
-fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
-    let mut lines = Vec::new();
-    for item in app.visible_nodes() {
-        let selected = app.selected == Some(item.node.id);
-        let selector = if selected { "› " } else { "  " };
-        let indent = "  ".repeat(item.depth);
-        let marker = if item.node.has_children {
-            if app.expanded.contains(&item.node.id) {
-                "▾"
-            } else {
-                "▸"
-            }
-        } else {
-            "•"
-        };
-        let prefix = format!("{selector}{indent}{marker} ");
-        let continuation = " ".repeat(UnicodeWidthStr::width(prefix.as_str()));
-        let tags = item
-            .node
-            .tags
-            .iter()
-            .map(|tag| format!("#{tag}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let text = if tags.is_empty() {
-            item.node.text.replace('\n', " ↵ ")
-        } else {
-            format!("{}  {tags}", item.node.text.replace('\n', " ↵ "))
-        };
-        let available = width
-            .saturating_sub(UnicodeWidthStr::width(prefix.as_str()))
-            .max(1);
-        let wrapped = wrap_text(&text, available);
-        for (index, content) in wrapped.into_iter().enumerate() {
-            lines.push(DisplayLine {
-                selected,
-                text: format!(
-                    "{}{}",
-                    if index == 0 { &prefix } else { &continuation },
-                    content
-                ),
-            });
-        }
-    }
-    lines
-}
-
-fn search_lines(search: &Search, width: usize) -> Vec<DisplayLine> {
-    if search.results.is_empty() {
-        return vec![DisplayLine {
-            selected: false,
-            text: if search.text.trim().chars().count() < 2 {
-                "  Type at least two characters".into()
-            } else {
-                "  No results".into()
-            },
-        }];
-    }
-    search
-        .results
-        .iter()
-        .enumerate()
-        .map(|(index, node)| {
-            let selected = index == search.selected;
-            let tags = node
-                .tags
-                .iter()
-                .map(|tag| format!("#{tag}"))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let text = if tags.is_empty() {
-                node.text.replace('\n', " ↵ ")
-            } else {
-                format!("{}  {tags}", node.text.replace('\n', " ↵ "))
-            };
-            DisplayLine {
-                selected,
-                text: fit(
-                    &format!("{}• {text}", if selected { "› " } else { "  " }),
-                    width,
-                ),
-            }
-        })
-        .collect()
-}
-
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    if text.is_empty() {
-        return vec![String::new()];
-    }
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    let mut line_width = 0;
-    for character in text.chars() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if !line.is_empty() && line_width + character_width > width {
-            lines.push(line);
-            line = String::new();
-            line_width = 0;
-        }
-        line.push(character);
-        line_width += character_width;
-    }
-    lines.push(line);
-    lines
-}
-
-fn fit(text: &str, width: usize) -> String {
-    let mut fitted = String::new();
-    let mut used = 0;
-    for character in text.chars() {
-        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
-        if used + character_width > width {
-            break;
-        }
-        fitted.push(character);
-        used += character_width;
-    }
-    fitted
-}
-
-fn editor_view(text: &str, cursor: usize, width: usize) -> (String, usize) {
-    let characters: Vec<char> = text.chars().collect();
-    let mut start = 0;
-    while start < cursor
-        && display_width(&characters[start..cursor]) >= width.saturating_sub(1).max(1)
-    {
-        start += 1;
-    }
-    let cursor_column = display_width(&characters[start..cursor]);
-    let mut view = String::new();
-    let mut used = 0;
-    for character in &characters[start..] {
-        let shown = if character.is_control() {
-            '↵'
-        } else {
-            *character
-        };
-        let character_width = UnicodeWidthChar::width(shown).unwrap_or(0);
-        if used + character_width > width {
-            break;
-        }
-        view.push(shown);
-        used += character_width;
-    }
-    (view, cursor_column)
-}
-
-fn display_width(characters: &[char]) -> usize {
-    characters
-        .iter()
-        .map(|character| {
-            UnicodeWidthChar::width(if character.is_control() {
-                '↵'
-            } else {
-                *character
-            })
-            .unwrap_or(0)
-        })
-        .sum()
-}
-
 fn char_to_byte(text: &str, character: usize) -> usize {
     text.char_indices()
         .nth(character)
@@ -1283,7 +1415,7 @@ mod tests {
         let mut child_input = CreateNode::new("Child");
         child_input.parent_id = Some(parent.id);
         let child = engine.create_node(child_input).unwrap();
-        (App::open(engine).unwrap(), parent, child)
+        (App::open_with_focus(engine, None).unwrap(), parent, child)
     }
 
     #[test]
@@ -1310,6 +1442,16 @@ mod tests {
         assert!(actionable_key(KeyEventKind::Press));
         assert!(actionable_key(KeyEventKind::Repeat));
         assert!(!actionable_key(KeyEventKind::Release));
+    }
+
+    #[test]
+    fn normal_startup_focuses_today() {
+        let app = App::open(Engine::open(":memory:").unwrap()).unwrap();
+        let today = jiff::Zoned::now().date().to_string();
+        assert!(matches!(
+            app.focus_path.last().and_then(|node| node.system.as_ref()),
+            Some(vrac::SystemNode::JournalDay { date }) if date == &today
+        ));
     }
 
     #[test]
@@ -1355,7 +1497,7 @@ mod tests {
                 .create_node(CreateNode::new(format!("Node {index:03}")))
                 .unwrap();
         }
-        let mut app = App::open(engine).unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
         let branch = app.branches.get(&None).unwrap();
         assert_eq!(branch.nodes.len(), Page::default().limit);
         assert!(branch.next.is_some());
@@ -1388,6 +1530,48 @@ mod tests {
             .unwrap();
         assert_eq!(app.focus, Some(parent.id));
         assert_eq!(app.focus_label(), "root › Vrac concept");
+    }
+
+    #[test]
+    fn tag_prompt_toggles_a_node_property() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_tag_prompt().unwrap();
+        app.tag_prompt.as_mut().unwrap().query = "task".into();
+        app.refresh_tag_prompt().unwrap();
+        app.commit_tag_prompt().unwrap();
+        assert_eq!(app.engine.node(parent.id).unwrap().unwrap().tags, ["task"]);
+
+        app.start_tag_prompt().unwrap();
+        app.tag_prompt.as_mut().unwrap().query = "task".into();
+        app.refresh_tag_prompt().unwrap();
+        app.commit_tag_prompt().unwrap();
+        assert!(app.engine.node(parent.id).unwrap().unwrap().tags.is_empty());
+
+        app.start_edit();
+        app.handle_editor_key(KeyEvent::new(KeyCode::Char('#'), KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.tag_prompt.as_ref().unwrap().target_id, parent.id);
+        assert_eq!(app.editor.as_ref().unwrap().text, "Parent");
+    }
+
+    #[test]
+    fn backlinks_open_the_matching_context() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let source = engine
+            .create_node(CreateNode::new("See [[Target]]"))
+            .unwrap();
+        let target = source.references[0].target_id;
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.selected = Some(target);
+
+        app.start_backlinks().unwrap();
+        let view = app.backlinks.as_ref().unwrap();
+        assert_eq!(view.contexts[0].last().unwrap().id, source.id);
+
+        app.handle_backlink_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        assert_eq!(app.focus, Some(source.id));
     }
 
     #[test]
@@ -1430,13 +1614,30 @@ mod tests {
     }
 
     #[test]
+    fn editing_and_creation_render_the_caret_inside_the_outline() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+        app.start_edit();
+        let editing = display_lines(&app, 40);
+        assert!(editing.iter().any(|line| line.cursor.is_some()));
+        assert!(editing.iter().any(|line| line.text.contains("Parent")));
+
+        app.editor = None;
+        app.start_new_sibling();
+        app.editor.as_mut().unwrap().insert('N');
+        let creating = display_lines(&app, 40);
+        let draft = creating.iter().find(|line| line.cursor.is_some()).unwrap();
+        assert!(draft.text.contains('N'));
+    }
+
+    #[test]
     fn editing_preserves_untouched_stable_references() {
         let mut engine = Engine::open(":memory:").unwrap();
         let source = engine
             .create_node(CreateNode::new("See [[Target]]"))
             .unwrap();
         let target = source.references[0].target_id;
-        let mut app = App::open(engine).unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
         app.selected = Some(source.id);
         app.start_edit();
         app.editor.as_mut().unwrap().insert('!');
@@ -1459,6 +1660,35 @@ mod tests {
                 .is_empty()
         );
         assert!(app.engine.node(target).unwrap().is_none());
+    }
+
+    #[test]
+    fn inline_reference_completion_keeps_the_selected_identity() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let target = engine.create_node(CreateNode::new("Project")).unwrap();
+        let source = engine.create_node(CreateNode::new("See ")).unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.selected = Some(source.id);
+        app.start_edit();
+        for character in "[[pro".chars() {
+            let key = KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE);
+            if app.reference_prompt.is_some() {
+                app.handle_reference_key(key).unwrap();
+            } else {
+                app.handle_editor_key(key).unwrap();
+            }
+        }
+        assert_eq!(
+            app.reference_prompt.as_ref().unwrap().results[0].id,
+            target.id
+        );
+        app.handle_reference_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+        app.commit_editor().unwrap();
+
+        let updated = app.engine.node(source.id).unwrap().unwrap();
+        assert_eq!(updated.text, "See [[Project]]");
+        assert_eq!(updated.references[0].target_id, target.id);
     }
 
     #[test]
