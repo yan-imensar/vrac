@@ -614,6 +614,7 @@ struct App {
     tag_prompt: Option<TagPrompt>,
     backlinks: Option<BacklinkView>,
     reference_prompt: Option<ReferencePrompt>,
+    help: bool,
     pending_key: Option<char>,
     status: String,
     scroll: usize,
@@ -640,6 +641,7 @@ impl App {
             tag_prompt: None,
             backlinks: None,
             reference_prompt: None,
+            help: false,
             pending_key: None,
             status: String::new(),
             scroll: 0,
@@ -808,7 +810,13 @@ impl App {
             self.finish_editor()?;
             return Ok(Action::Quit);
         }
-        if self.reference_prompt.is_some() {
+        if self.help {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('?')) {
+                self.help = false;
+                self.scroll = 0;
+            }
+            Ok(Action::Continue)
+        } else if self.reference_prompt.is_some() {
             self.handle_reference_key(key)
         } else if self.backlinks.is_some() {
             self.handle_backlink_key(key)
@@ -893,6 +901,10 @@ impl App {
             KeyCode::Char(':') => self.start_search(PromptKind::Commands)?,
             KeyCode::Char('#') => self.start_tag_prompt()?,
             KeyCode::Char('b') => self.start_backlinks()?,
+            KeyCode::Char('?') => {
+                self.help = true;
+                self.scroll = 0;
+            }
             KeyCode::Char('i') | KeyCode::Char('I') => self.start_edit_at_start(),
             KeyCode::Char('a') | KeyCode::Char('A') => self.start_edit(),
             KeyCode::Char('o') => self.start_new_sibling(),
@@ -2315,6 +2327,22 @@ mod tests {
         assert!(actionable_key(KeyEventKind::Press));
         assert!(actionable_key(KeyEventKind::Repeat));
         assert!(!actionable_key(KeyEventKind::Release));
+    }
+
+    #[test]
+    fn question_mark_opens_and_closes_help_without_changing_selection() {
+        let (mut app, parent, _) = test_app();
+        app.selected = Some(parent.id);
+
+        app.handle_normal_key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE))
+            .unwrap();
+        assert!(app.help);
+        assert_eq!(app.selected, Some(parent.id));
+
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(!app.help);
+        assert_eq!(app.selected, Some(parent.id));
     }
 
     #[test]

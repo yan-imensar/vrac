@@ -28,10 +28,11 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
     app.viewport_width = width;
     let completion_height = completion_height(app, height);
     let body_height = height.saturating_sub(4 + completion_height);
-    let lines = match (&app.backlinks, &app.search) {
-        (Some(view), _) => backlink_lines(view, width),
-        (None, Some(search)) => search_lines(search, width),
-        (None, None) => display_lines(app, width),
+    let lines = match (app.help, &app.backlinks, &app.search) {
+        (true, _, _) => help_lines(),
+        (false, Some(view), _) => backlink_lines(view, width),
+        (false, None, Some(search)) => search_lines(search, width),
+        (false, None, None) => display_lines(app, width),
     };
     let selected_start = lines
         .iter()
@@ -107,7 +108,9 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
         }
     }
 
-    if app.backlinks.is_some() {
+    if app.help {
+        draw_help_footer(stdout, width, height)?;
+    } else if app.backlinks.is_some() {
         draw_backlink_footer(stdout, &app.status, width, height)?;
     } else if let Some(prompt) = &app.tag_prompt {
         draw_tag_footer(stdout, prompt, &app.status, width, height)?;
@@ -453,16 +456,7 @@ fn draw_normal_footer(
 ) -> io::Result<()> {
     if height >= 2 {
         queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
-        if status.is_empty() {
-            queue!(
-                stdout,
-                SetForegroundColor(Color::Cyan),
-                SetAttribute(Attribute::Bold),
-                Print(" NORMAL "),
-                SetAttribute(Attribute::Reset),
-                ResetColor
-            )?;
-        } else {
+        if !status.is_empty() {
             queue!(
                 stdout,
                 SetForegroundColor(Color::Yellow),
@@ -472,16 +466,60 @@ fn draw_normal_footer(
         }
     }
     if height >= 1 {
-        let help = "j/k move  h/l tree  Enter zoom  i/a edit  o/O new  / search  : commands";
         queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
-            Print(fit(help, width)),
+            Print(fit("? help", width)),
             ResetColor
         )?;
     }
     Ok(())
+}
+
+fn draw_help_footer(stdout: &mut Stdout, width: usize, height: usize) -> io::Result<()> {
+    if height >= 1 {
+        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
+        queue!(
+            stdout,
+            SetForegroundColor(Color::DarkGrey),
+            Print(fit("? or Esc close help", width)),
+            ResetColor
+        )?;
+    }
+    Ok(())
+}
+
+fn help_lines() -> Vec<DisplayLine> {
+    [
+        "  NAVIGATION",
+        "    j/k or ↑/↓       move",
+        "    h/l or ←/→       parent / child",
+        "    Space            collapse / expand",
+        "    Enter / -        zoom in / out",
+        "",
+        "  EDITING",
+        "    i/a              edit start / end",
+        "    o/O/c            sibling after / before / child",
+        "    Tab / Shift-Tab  indent / outdent",
+        "    yy / dd / p      copy / cut / paste subtree",
+        "    u / Ctrl-R       undo / redo",
+        "",
+        "  DISCOVERY",
+        "    /                search notes",
+        "    :                commands",
+        "    # / [[           tags / references while editing",
+        "    b                backlinks",
+        "    q / Ctrl-C       quit",
+    ]
+    .into_iter()
+    .map(|text| DisplayLine {
+        selected: false,
+        text: text.into(),
+        cursor: None,
+        content_start: text.len().min(2),
+    })
+    .collect()
 }
 
 fn draw_search_footer(

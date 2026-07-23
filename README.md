@@ -53,7 +53,9 @@ the resolved default location.
 Use `j`/`k` or the arrow keys to move, `h`/`l` to reach a parent or first
 child, `Space` to fold a branch, `Enter` to focus a node, and `-` to return.
 `/` opens bounded node search and `:` opens the command menu; `#` toggles tags;
-`i`, `o`, and `c` edit or create nodes directly in the outline.
+`i`, `o`, and `c` edit or create nodes directly in the outline. The normal
+footer stays quiet; `?` opens the complete keyboard help and `?` or `Esc`
+closes it.
 While editing, `Enter` persists the current text and immediately starts the
 next sibling, while `Tab` and `Shift-Tab` indent and outdent without leaving
 the inline editor. `Esc` returns to navigation with non-empty changes already
