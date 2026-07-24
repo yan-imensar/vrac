@@ -261,13 +261,8 @@ fn backlinks_inherit_reference_context_downward_and_filter_by_tag() {
         "Northstar",
         northstar.id,
     );
-    let attendee = create_referencing_child(
-        &mut engine,
-        meeting.id,
-        "with [[Alex]]",
-        "Alex",
-        alex.id,
-    );
+    let attendee =
+        create_referencing_child(&mut engine, meeting.id, "with [[Alex]]", "Alex", alex.id);
     let _other_attendee = create_referencing_child(
         &mut engine,
         meeting.id,
@@ -338,10 +333,7 @@ fn backlinks_inherit_reference_context_downward_and_filter_by_tag() {
     let alex_links = engine
         .backlinks(alex.id, None, Page::default())
         .expect("read alex backlinks");
-    assert_eq!(
-        alex_links.contexts[0].path.last().unwrap().id,
-        attendee.id
-    );
+    assert_eq!(alex_links.contexts[0].path.last().unwrap().id, attendee.id);
     assert!(
         alex_links.contexts[0]
             .path
@@ -372,10 +364,7 @@ fn backlinks_inherit_reference_context_downward_and_filter_by_tag() {
         .backlinks(morgan.id, Some("task"), Page::default())
         .expect("read morgan tasks");
     assert_eq!(morgan_tasks.contexts.len(), 1);
-    assert_eq!(
-        morgan_tasks.contexts[0].path.last().unwrap().id,
-        contact.id
-    );
+    assert_eq!(morgan_tasks.contexts[0].path.last().unwrap().id, contact.id);
     assert!(
         !morgan_tasks.contexts[0]
             .path

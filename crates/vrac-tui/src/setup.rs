@@ -14,6 +14,12 @@ use crossterm::terminal::{
 use unicode_width::UnicodeWidthChar;
 
 pub(crate) fn choose_workspace_folder() -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
+    choose_workspace_folder_with_status(String::new())
+}
+
+pub(crate) fn choose_workspace_folder_with_status(
+    status: String,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(
             "workspace selection needs an interactive terminal; run `vrac tui <workspace-folder>` to select one non-interactively"
@@ -22,6 +28,7 @@ pub(crate) fn choose_workspace_folder() -> Result<Option<PathBuf>, Box<dyn std::
     }
     let home = dirs::home_dir().ok_or("cannot determine the home directory")?;
     let mut picker = FolderPicker::new(known_locations(&home))?;
+    picker.status = status;
     let mut terminal = SetupTerminal::enter()?;
 
     loop {

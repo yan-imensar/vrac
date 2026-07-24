@@ -8,7 +8,6 @@ const WORKSPACE_ID_FILE: &str = "workspace-id";
 const CHECKPOINT_FILE: &str = "checkpoint.vrac";
 const CHANGES_DIRECTORY: &str = "changes";
 const CONFIG_FILE: &str = "workspace-folder";
-const LEGACY_DATABASE: &str = "vrac.vrac";
 
 pub(crate) struct OpenedWorkspace {
     pub(crate) engine: Engine,
@@ -116,21 +115,6 @@ fn create_workspace(
         if folder.join(name).exists() {
             return Err("the selected folder contains incomplete Vrac workspace data".into());
         }
-    }
-
-    let legacy = data_directory.join(LEGACY_DATABASE);
-    if legacy.is_file() {
-        let engine = Engine::open_synced(&legacy, device_id).map_err(engine_error)?;
-        let workspace_id = engine.workspace_id().map_err(engine_error)?;
-        create_provider(folder, workspace_id, |path| {
-            engine.checkpoint(path).map_err(engine_error)
-        })?;
-        drop(engine);
-        let destination = local_database(data_directory, workspace_id);
-        if !destination.is_file() {
-            install_checkpoint(folder, &destination, workspace_id, device_id)?;
-        }
-        return Ok(workspace_id);
     }
 
     let partial = data_directory.join("workspaces").join("new.partial");
@@ -468,12 +452,13 @@ mod tests {
     }
 
     #[test]
-    fn an_existing_local_database_is_attached_without_losing_its_nodes() {
+    fn an_unmanaged_local_database_is_ignored_when_creating_a_workspace() {
         let provider = tempfile::tempdir().expect("create provider directory");
         let data = tempfile::tempdir().expect("create data directory");
-        let mut legacy = Engine::open(data.path().join(LEGACY_DATABASE)).expect("open legacy");
-        create_root(&mut legacy, "kept note");
-        drop(legacy);
+        let unmanaged = data.path().join("vrac.vrac");
+        let mut unmanaged_engine = Engine::open(&unmanaged).expect("open unmanaged database");
+        create_root(&mut unmanaged_engine, "kept note");
+        drop(unmanaged_engine);
 
         let opened = Workspace::open(provider.path(), data.path()).expect("attach workspace");
         let texts: Vec<_> = opened
@@ -484,8 +469,8 @@ mod tests {
             .into_iter()
             .map(|node| node.text)
             .collect();
-        assert!(texts.iter().any(|text| text == "kept note"));
-        assert!(data.path().join(LEGACY_DATABASE).is_file());
+        assert!(!texts.iter().any(|text| text == "kept note"));
+        assert!(unmanaged.is_file());
     }
 
     #[test]

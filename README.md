@@ -32,7 +32,8 @@ vrac
 
 The first launch opens a terminal-native folder browser. Choose or create a
 folder for the workspace; the same flow works over SSH. Later launches reuse
-that selection.
+that selection. If the selected workspace can no longer be opened, Vrac shows
+the browser again and leaves its existing local and shared files untouched.
 
 To build without installing:
 

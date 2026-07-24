@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::io::{self, Stdout};
+use std::io::{self, IsTerminal, Stdout};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -33,7 +33,10 @@ mod workspace;
 #[doc(hidden)]
 pub use performance::run_reference_scenario;
 
-use setup::choose_workspace_folder as pick_workspace_folder;
+use setup::{
+    choose_workspace_folder as pick_workspace_folder,
+    choose_workspace_folder_with_status as pick_workspace_folder_with_status,
+};
 use ui::draw;
 #[cfg(test)]
 use ui::{display_lines, draw_inline_content, split_content, wrap_text};
@@ -94,13 +97,38 @@ pub fn run_with_workspace_picker() -> Result<(), Box<dyn Error>> {
 
 fn run_with_folder(data_directory: &Path, folder: &mut PathBuf) -> Result<(), Box<dyn Error>> {
     loop {
-        let opened = Workspace::open(&*folder, data_directory)?;
+        let opened = open_workspace(data_directory, folder, |status| {
+            if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                return Ok(None);
+            }
+            pick_workspace_folder_with_status(status.into())
+        })?;
         remember_folder(data_directory, opened.workspace.folder())?;
         match run_workspace(opened)? {
             SessionExit::Quit => return Ok(()),
             SessionExit::ChooseWorkspace => {
                 if let Some(selected) = pick_workspace_folder()? {
                     *folder = selected;
+                }
+            }
+        }
+    }
+}
+
+fn open_workspace(
+    data_directory: &Path,
+    folder: &mut PathBuf,
+    mut pick_after_error: impl FnMut(&str) -> Result<Option<PathBuf>, Box<dyn Error>>,
+) -> Result<OpenedWorkspace, Box<dyn Error>> {
+    loop {
+        match Workspace::open(folder, data_directory) {
+            Ok(opened) => return Ok(opened),
+            Err(error) => {
+                let status =
+                    format!("Current workspace cannot be opened ({error}). Choose another folder.");
+                match pick_after_error(&status)? {
+                    Some(selected) => *folder = selected,
+                    None => return Err(error.into()),
                 }
             }
         }
@@ -2124,6 +2152,31 @@ mod tests {
 
         assert!(choose_workspace_folder(None, data.path()).is_err());
         assert!(!folder.exists());
+    }
+
+    #[test]
+    fn a_workspace_that_cannot_open_can_be_replaced_before_the_tui_starts() {
+        let data = tempfile::tempdir().unwrap();
+        let providers = tempfile::tempdir().unwrap();
+        let unavailable = providers.path().join("unavailable");
+        let replacement = providers.path().join("replacement");
+        std::fs::create_dir(&unavailable).unwrap();
+        std::fs::create_dir(&replacement).unwrap();
+        std::fs::write(unavailable.join("workspace-id"), "invalid").unwrap();
+        let replacement = replacement.canonicalize().unwrap();
+        let mut folder = unavailable.canonicalize().unwrap();
+        let mut prompts = 0;
+
+        let opened = open_workspace(data.path(), &mut folder, |status| {
+            prompts += 1;
+            assert!(status.contains("Current workspace cannot be opened"));
+            Ok(Some(replacement.clone()))
+        })
+        .unwrap();
+
+        assert_eq!(prompts, 1);
+        assert_eq!(folder, replacement);
+        assert_eq!(opened.workspace.folder(), replacement);
     }
 
     fn test_app() -> (App, Node, Node) {
