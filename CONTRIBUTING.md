@@ -33,10 +33,11 @@ Every pull request has exactly one release-note label:
 | `maintenance` | Internal engineering worth mentioning |
 | `skip-changelog` | Internal work users do not need to see |
 
-GitHub rejects an unlabeled or ambiguously labeled pull request. Once the
-required checks pass and conversations are resolved, squash-merge it and delete
-the branch. The pull request title becomes the single commit on `main` and the
-entry used by the generated release notes.
+GitHub rejects an unlabeled or ambiguously labeled pull request. Keep exactly
+one validated commit on the branch and make its subject match the pull request
+title. Once the required checks pass and conversations are resolved,
+rebase-merge it and delete the branch. The same title becomes the commit on
+`main` and the entry used by the generated release notes.
 
 ## Publish a release
 

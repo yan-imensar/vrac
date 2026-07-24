@@ -2,7 +2,7 @@ name: PR metadata
 
 on:
   pull_request:
-    types: [opened, reopened, synchronize, labeled, unlabeled]
+    types: [reopened, synchronize, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -13,8 +13,17 @@ jobs:
     runs-on: ubuntu-slim
     timeout-minutes: 2
     env:
+      COMMITS: ${{ github.event.pull_request.commits }}
       LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
     steps:
+      - name: Require one commit
+        shell: bash
+        run: |
+          if [ "$COMMITS" -ne 1 ]; then
+            echo "Keep exactly one validated commit in the pull request. Found: $COMMITS"
+            exit 1
+          fi
+
       - name: Require exactly one release-note label
         shell: bash
         run: |
