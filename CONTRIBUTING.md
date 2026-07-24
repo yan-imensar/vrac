@@ -19,9 +19,9 @@ Every change reaches `main` through one short-lived branch and one pull request.
 5. Open a pull request with an imperative, user-readable title. Explain why
    the change exists and list the verification performed.
 
-## Label the pull request
+## Release notes
 
-Every pull request has exactly one release-note label:
+Add a release-note label when it usefully classifies the change:
 
 | Label | Use it for |
 | --- | --- |
@@ -33,11 +33,12 @@ Every pull request has exactly one release-note label:
 | `maintenance` | Internal engineering worth mentioning |
 | `skip-changelog` | Internal work users do not need to see |
 
-GitHub rejects an unlabeled or ambiguously labeled pull request. Keep exactly
-one validated commit on the branch and make its subject match the pull request
-title. Once the required checks pass and conversations are resolved,
-rebase-merge it and delete the branch. The same title becomes the commit on
-`main` and the entry used by the generated release notes.
+An unlabeled pull request simply appears under `Other changes`. Commit as often
+as useful while implementing and responding to review; there is no need to
+rewrite the branch into one commit. Once the required checks pass and
+conversations are resolved, squash-merge it and delete the branch. The pull
+request title becomes the commit on `main` and the generated release-note
+entry.
 
 ## Publish a release
 

@@ -12,4 +12,4 @@
 
 ## Release notes
 
-<!-- Apply exactly one release-note label before merge. -->
+<!-- Add a release-note label when it usefully classifies the change. -->
