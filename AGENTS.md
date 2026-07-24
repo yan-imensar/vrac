@@ -183,17 +183,17 @@ preserved, relevant tests pass, and affected documentation is consistent.
 - Keep one coherent change in each pull request. Write its title in imperative
   English as a useful release-note sentence, and record the reason and
   verification in the body.
-- Apply exactly one release-note label before merge: `breaking-change`,
-  `enhancement`, `bug`, `documentation`, `dependencies`, `maintenance`, or
-  `skip-changelog`. Use `skip-changelog` only for internal work that users do
-  not need to see.
+- Apply a release-note label when it adds useful classification:
+  `breaking-change`, `enhancement`, `bug`, `documentation`, `dependencies`, or
+  `maintenance`. Unlabeled pull requests fall under `Other changes`; use
+  `skip-changelog` only for internal work that users do not need to see.
 - Open the pull request only after the proportional local checks pass. Merge
   only when every required GitHub check passes and every conversation is
   resolved.
-- Keep exactly one validated commit in each pull request and make its subject
-  match the pull request title. Rebase-merge the pull request and delete its
-  branch. The same title becomes the durable commit and generated release-note
-  entry on `main`.
+- Commit freely while implementing and responding to review. Do not rewrite a
+  branch merely to produce one commit. Squash-merge the pull request and delete
+  its branch; the pull request title becomes the durable commit and generated
+  release-note entry on `main`.
 - Do not replace a pull request with a series of direct commits. Emergency
   branch-protection changes require an explicit request from the repository
   owner and must be restored immediately afterward.
