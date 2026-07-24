@@ -205,4 +205,8 @@ including frame serialization below 16.667 ms at p95, and total peak RSS below
 
 ## License
 
-Vrac is available under the [MIT License](LICENSE).
+Vrac is free software licensed under the
+[GNU Affero General Public License v3.0](LICENSE). You may use, modify, share,
+and sell it. If you distribute a modified version or make one available over
+a network, its users must be offered the corresponding source code under the
+same license.
