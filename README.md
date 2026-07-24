@@ -1,25 +1,34 @@
 # Vrac
 
-Vrac is a local-first terminal outliner built for fast capture and mental
-offloading. Write first, structure naturally, and retrieve notes later through
-their context, tags, references, and backlinks.
+> Capture first. Structure later—or never.
 
-The project is approaching its first public release and is already used for
-daily note-taking. The documented workspace format starts cleanly at V1.
+Vrac is the local-first TUI outliner your terminal has been missing. It opens
+on today, stays out of the way, and remains stupidly fast—even across millions
+of notes.
 
-## Why Vrac
+Your thoughts do not wait for the right folder. Vrac does not ask for one.
+Write everything in the Journal, let structure emerge through bullets, add
+`[[references]]` and `#tags` when they are useful, and find the important stuff
+later without spending your life maintaining a second brain.
 
-- Capture directly into today's Journal without choosing a destination first.
-- Edit a real outline inline with keyboard-first navigation.
-- Keep tasks, decisions, meetings, and ideas in their original context.
-- Connect concepts with stable `[[references]]` and retrieve their backlinks.
-- Classify nodes with indexed `#tags` without mixing metadata into their text.
+Vrac is approaching its first public release and is already used for daily
+note-taking. Its workspace format starts cleanly at V1.
+
+## Not another productivity system
+
+- Open it and type. You are already in today's Journal.
+- Structure naturally with real, inline-editable bullets.
+- Keep tasks, decisions, meetings, and ideas where they actually happened.
+- Connect concepts with stable `[[references]]` and contextual backlinks.
+- Add indexed `#tags` without turning every sentence into metadata soup.
 - Work locally or through SSH with no graphical dependency.
 - Synchronize through an ordinary iCloud, Syncthing, Dropbox, or OneDrive
   folder while the active SQLite database stays on local storage.
 
-Vrac has no account, server, telemetry, or cloud database. SQLite is the single
-source of truth on each device.
+No account. No server. No telemetry. No cloud database. No loading spinner
+contemplating its own existence.
+
+Just one fast terminal outliner, an ordinary SQLite database, and your thoughts.
 
 ## Install
 
@@ -92,7 +101,7 @@ and Alt-Backspace removes a word.
 Clipboard text remains useful outside Vrac. Paste accepts ordinary lines or
 indented `- ` bullets and creates the complete hierarchy atomically.
 
-## Workspaces and synchronization
+## Local means local
 
 The selected folder contains only portable synchronization material:
 
@@ -152,8 +161,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The engine and TUI have reproducible five-million-node release scenarios. They
-are intentionally separate from ordinary correctness tests:
+"Fast" is not decorative copy. The engine and TUI have reproducible
+five-million-node release scenarios, intentionally separate from ordinary
+correctness tests:
 
 ```sh
 cargo run --release -p vrac --example performance -- \
