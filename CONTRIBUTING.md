@@ -47,13 +47,15 @@ Vrac follows Semantic Versioning. Prepare a release in its own pull request:
 1. set the workspace version in `Cargo.toml` and refresh `Cargo.lock`;
 2. label the version-only pull request `skip-changelog`;
 3. merge it after CI passes;
-4. create and push an annotated `vX.Y.Z` tag on that merge.
+4. run the Release workflow manually on `main` and verify all supported builds;
+5. create and push an annotated `vX.Y.Z` tag on that merge;
+6. verify the generated draft and publish it.
 
 The release workflow verifies that the tag matches the workspace version,
-builds the supported archives, generates SHA-256 checksums, and creates the
+builds the supported archives, generates SHA-256 checksums, and creates a draft
 GitHub release from merged pull requests. Published tags and release artifacts
 are never replaced; a correction receives a new version.
 
-The first public release needs a short human-written overview because the
-repository predates this pull-request workflow. Later releases should need
-little or no manual changelog editing.
+An optional `.github/release-notes/vX.Y.Z.md` file prepends a human-written
+overview. Generated notes remain the default and should need little or no
+manual editing after the first public release.

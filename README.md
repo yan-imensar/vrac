@@ -11,8 +11,8 @@ Write everything in the Journal, let structure emerge through bullets, add
 `[[references]]` and `#tags` when they are useful, and find the important stuff
 later without spending your life maintaining a second brain.
 
-Vrac is approaching its first public release and is already used for daily
-note-taking. Its workspace format starts cleanly at V1.
+Vrac is early software and is already used for daily note-taking. Its workspace
+format starts cleanly at V1.
 
 ## Not another productivity system
 
