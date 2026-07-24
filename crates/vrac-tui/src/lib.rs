@@ -122,7 +122,7 @@ fn run_workspace(opened: OpenedWorkspace) -> Result<SessionExit, Box<dyn Error>>
     let mut quit = false;
 
     while !quit {
-        draw(terminal.stdout(), &mut app, workspace.folder())?;
+        draw(terminal.stdout(), &mut app)?;
         let timeout = next_sync.saturating_duration_since(Instant::now());
         if event::poll(timeout)? {
             let event = event::read()?;
@@ -3303,5 +3303,21 @@ mod tests {
         let lines = display_lines(&app, 8);
         let first = lines.iter().position(|line| line.selected).unwrap();
         assert!(lines[first + 1].text.starts_with("    "));
+    }
+
+    #[test]
+    fn top_level_groups_have_visual_space_between_them() {
+        let (app, _, _) = test_app();
+        let group_count = app
+            .visible_nodes()
+            .iter()
+            .filter(|item| item.depth == 0)
+            .count();
+        let lines = display_lines(&app, 80);
+
+        assert_eq!(
+            lines.iter().filter(|line| line.text.is_empty()).count(),
+            group_count.saturating_sub(1)
+        );
     }
 }

@@ -99,6 +99,10 @@ text. Synchronized terminal updates prevent intermediate redraws from
 flashing. Tree guides show only continuing ancestor branches; structural
 prefixes, references, and tags have distinct visual treatments. Inline
 completion stays beside the outline instead of replacing it.
+The main frame shows only the current focus path: product and workspace-name
+chrome stay out of the writing surface. A small outer gutter and one blank row
+between top-level groups keep captures readable, while descendants remain
+compact so their hierarchy stays visually continuous.
 
 The same `vrac` binary keeps its non-interactive engine commands (`init`, `add`,
 `node`, `children`, `set-text`, `move`, and `check`). They remain suitable for

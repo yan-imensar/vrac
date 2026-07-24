@@ -5,13 +5,13 @@ use std::time::{Duration, Instant};
 
 use vrac::Engine;
 
-use super::ui::{draw_display_line, frame_lines};
+use super::ui::{content_width, draw_display_line, frame_lines, outline_height};
 use super::{App, LauncherKind};
 
 const SAMPLE_COUNT: usize = 100;
 const RELOAD_COUNT: usize = 20;
 const WIDTH: usize = 120;
-const BODY_HEIGHT: usize = 36;
+const HEIGHT: usize = 40;
 const FIRST_VIEW_BUDGET: Duration = Duration::from_millis(1_500);
 const INTERACTIVE_BUDGET: Duration = Duration::from_micros(16_667);
 
@@ -131,11 +131,13 @@ pub fn run_reference_scenario(path: &Path) -> Result<Engine, Box<dyn StdError>> 
 }
 
 fn render_frame(app: &mut App) -> Result<(), Box<dyn StdError>> {
-    app.viewport_width = WIDTH;
-    let lines = frame_lines(app, WIDTH, BODY_HEIGHT);
-    let mut output = Vec::with_capacity(BODY_HEIGHT * WIDTH);
-    for line in lines.iter().skip(app.scroll).take(BODY_HEIGHT) {
-        draw_display_line(&mut output, line, WIDTH)?;
+    let content_width = content_width(WIDTH);
+    let body_height = outline_height(HEIGHT, 0);
+    app.viewport_width = content_width;
+    let lines = frame_lines(app, content_width, body_height);
+    let mut output = Vec::with_capacity(body_height * content_width);
+    for line in lines.iter().skip(app.scroll).take(body_height) {
+        draw_display_line(&mut output, line, content_width)?;
     }
     std::hint::black_box(output);
     Ok(())

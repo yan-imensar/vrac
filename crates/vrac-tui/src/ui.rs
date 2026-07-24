@@ -1,5 +1,4 @@
 use std::io::{self, Stdout, Write};
-use std::path::Path;
 
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::queue;
@@ -13,6 +12,11 @@ use super::{
     TagPrompt, VisibleNode,
 };
 
+const CONTENT_LEFT: usize = 2;
+const TITLE_ROW: usize = 1;
+const BODY_START: usize = 3;
+const FOOTER_HEIGHT: usize = 2;
+
 #[derive(Clone)]
 pub(super) struct DisplayLine {
     pub(super) selected: bool,
@@ -21,14 +25,17 @@ pub(super) struct DisplayLine {
     content_start: usize,
 }
 
-pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Result<()> {
+pub(super) fn draw(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
     let (width, height) = terminal::size()?;
     let width = usize::from(width);
     let height = usize::from(height);
-    app.viewport_width = width;
+    let content_left = CONTENT_LEFT.min(width.saturating_sub(1));
+    let content_column = u16::try_from(content_left).unwrap_or(u16::MAX);
+    let content_width = content_width(width);
+    app.viewport_width = content_width;
     let completion_height = completion_height(app, height);
-    let body_height = height.saturating_sub(4 + completion_height);
-    let lines = frame_lines(app, width, body_height);
+    let body_height = outline_height(height, completion_height);
+    let lines = frame_lines(app, content_width, body_height);
 
     queue!(
         stdout,
@@ -37,56 +44,72 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
         MoveTo(0, 0),
         Clear(ClearType::All)
     )?;
-    queue!(
-        stdout,
-        SetForegroundColor(Color::Cyan),
-        SetAttribute(Attribute::Bold),
-        Print(fit(
-            &format!(
-                "VRAC  {}",
-                path.file_name().map_or_else(
-                    || path.display().to_string(),
-                    |name| name.to_string_lossy().into()
-                )
-            ),
-            width
-        )),
-        SetAttribute(Attribute::Reset),
-        ResetColor
-    )?;
-    if height > 1 {
-        queue!(stdout, MoveTo(0, 1), SetForegroundColor(Color::DarkGrey))?;
+    if height > BODY_START {
         queue!(
             stdout,
-            Print(fit(&format!("  {}", app.focus_label()), width)),
+            MoveTo(content_column, u16::try_from(TITLE_ROW).unwrap_or(0)),
+            SetForegroundColor(Color::DarkGrey)
+        )?;
+        queue!(
+            stdout,
+            Print(fit(&app.focus_label(), content_width)),
             ResetColor
         )?;
     }
 
     if completion_height > 0 {
-        draw_completion_panel(stdout, app, width, 2 + body_height, completion_height)?;
+        draw_completion_panel(
+            stdout,
+            app,
+            content_column,
+            content_width,
+            BODY_START + body_height,
+            completion_height,
+        )?;
     }
 
     let mut inline_cursor = None;
     for (offset, line) in lines.iter().skip(app.scroll).take(body_height).enumerate() {
-        let row = offset + 2;
-        queue!(stdout, MoveTo(0, u16::try_from(row).unwrap_or(u16::MAX)))?;
-        draw_display_line(stdout, line, width)?;
+        let row = offset + BODY_START;
+        queue!(
+            stdout,
+            MoveTo(content_column, u16::try_from(row).unwrap_or(u16::MAX))
+        )?;
+        draw_display_line(stdout, line, content_width)?;
         if let Some(column) = line.cursor {
-            inline_cursor = Some((column.min(width.saturating_sub(1)), row));
+            inline_cursor = Some((
+                content_left
+                    .saturating_add(column)
+                    .min(width.saturating_sub(1)),
+                row,
+            ));
         }
     }
 
     if app.help {
-        draw_help_footer(stdout, width, height)?;
+        draw_help_footer(stdout, content_column, content_width, height)?;
     } else if app.backlinks.is_some() {
-        draw_backlink_footer(stdout, &app.status, width, height)?;
+        draw_backlink_footer(stdout, &app.status, content_column, content_width, height)?;
     } else if let Some(prompt) = &app.tag_prompt {
-        draw_tag_footer(stdout, prompt, &app.status, width, height)?;
+        draw_tag_footer(
+            stdout,
+            prompt,
+            &app.status,
+            content_column,
+            content_width,
+            height,
+        )?;
     } else if let Some(launcher) = &app.launcher {
-        draw_launcher_footer(stdout, launcher, &app.status, width, height)?;
+        draw_launcher_footer(
+            stdout,
+            launcher,
+            &app.status,
+            content_column,
+            content_width,
+            height,
+        )?;
     } else if let Some(prompt) = &app.reference_prompt {
-        draw_reference_footer(stdout, prompt, width, height)?;
+        draw_reference_footer(stdout, prompt, content_column, content_width, height)?;
         if let Some((column, row)) = inline_cursor {
             queue!(
                 stdout,
@@ -98,7 +121,7 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
             )?;
         }
     } else if app.editor.is_some() {
-        draw_editor_status(stdout, &app.status, width, height)?;
+        draw_editor_status(stdout, &app.status, content_column, content_width, height)?;
         if let Some((column, row)) = inline_cursor {
             queue!(
                 stdout,
@@ -110,10 +133,19 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
             )?;
         }
     } else {
-        draw_normal_footer(stdout, &app.status, width, height)?;
+        draw_normal_footer(stdout, &app.status, content_column, content_width, height)?;
     }
     queue!(stdout, EndSynchronizedUpdate)?;
     stdout.flush()
+}
+
+pub(super) fn content_width(total_width: usize) -> usize {
+    let left = CONTENT_LEFT.min(total_width.saturating_sub(1));
+    total_width.saturating_sub(left).max(1)
+}
+
+pub(super) fn outline_height(total_height: usize, completion_height: usize) -> usize {
+    total_height.saturating_sub(BODY_START + FOOTER_HEIGHT + completion_height)
 }
 
 pub(super) fn frame_lines(app: &mut App, width: usize, body_height: usize) -> Vec<DisplayLine> {
@@ -256,12 +288,13 @@ fn completion_height(app: &App, height: usize) -> usize {
     if app.tag_prompt.is_none() && app.reference_prompt.is_none() {
         return 0;
     }
-    6.min(height.saturating_sub(6))
+    6.min(height.saturating_sub(BODY_START + FOOTER_HEIGHT + 1))
 }
 
 fn draw_completion_panel(
     stdout: &mut Stdout,
     app: &App,
+    left: u16,
     width: usize,
     start: usize,
     height: usize,
@@ -302,7 +335,7 @@ fn draw_completion_panel(
     };
     queue!(
         stdout,
-        MoveTo(0, u16::try_from(start).unwrap_or(u16::MAX)),
+        MoveTo(left, u16::try_from(start).unwrap_or(u16::MAX)),
         SetForegroundColor(Color::DarkGrey),
         Print(fit(&format!("  ── {title} "), width)),
         ResetColor
@@ -316,7 +349,7 @@ fn draw_completion_panel(
         let active = first + offset == selected;
         queue!(
             stdout,
-            MoveTo(0, u16::try_from(start + offset + 1).unwrap_or(u16::MAX))
+            MoveTo(left, u16::try_from(start + offset + 1).unwrap_or(u16::MAX))
         )?;
         if active {
             queue!(
@@ -343,11 +376,12 @@ fn draw_completion_panel(
 fn draw_reference_footer(
     stdout: &mut Stdout,
     prompt: &ReferencePrompt,
+    left: u16,
     width: usize,
     height: usize,
 ) -> io::Result<()> {
     if height >= 2 {
-        queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 2).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::Yellow),
@@ -369,7 +403,7 @@ fn draw_reference_footer(
             },
             |node| format!("Enter inserts [[{}]]", node.text.replace('\n', " ")),
         );
-        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
@@ -383,6 +417,7 @@ fn draw_reference_footer(
 fn draw_backlink_footer(
     stdout: &mut Stdout,
     status: &str,
+    left: u16,
     width: usize,
     height: usize,
 ) -> io::Result<()> {
@@ -392,7 +427,7 @@ fn draw_backlink_footer(
         } else {
             status
         };
-        queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 2).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::Yellow),
@@ -401,7 +436,7 @@ fn draw_backlink_footer(
         )?;
     }
     if height >= 1 {
-        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
@@ -416,6 +451,7 @@ fn draw_tag_footer(
     stdout: &mut Stdout,
     prompt: &TagPrompt,
     status: &str,
+    left: u16,
     width: usize,
     height: usize,
 ) -> io::Result<()> {
@@ -425,7 +461,7 @@ fn draw_tag_footer(
         } else {
             status
         };
-        queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 2).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::Yellow),
@@ -436,7 +472,7 @@ fn draw_tag_footer(
     if height >= 1 {
         let input_width = width.saturating_sub(2);
         let query = fit(&prompt.query, input_width);
-        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::Cyan),
@@ -445,7 +481,8 @@ fn draw_tag_footer(
             Print(&query),
             Show
         )?;
-        let column = (2 + UnicodeWidthStr::width(query.as_str())).min(width.saturating_sub(1));
+        let column = usize::from(left)
+            + (2 + UnicodeWidthStr::width(query.as_str())).min(width.saturating_sub(1));
         queue!(
             stdout,
             MoveTo(
@@ -460,11 +497,12 @@ fn draw_tag_footer(
 fn draw_normal_footer(
     stdout: &mut Stdout,
     status: &str,
+    left: u16,
     width: usize,
     height: usize,
 ) -> io::Result<()> {
     if height >= 2 {
-        queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 2).unwrap_or(0)))?;
         if !status.is_empty() {
             queue!(
                 stdout,
@@ -475,7 +513,7 @@ fn draw_normal_footer(
         }
     }
     if height >= 1 {
-        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
@@ -486,9 +524,9 @@ fn draw_normal_footer(
     Ok(())
 }
 
-fn draw_help_footer(stdout: &mut Stdout, width: usize, height: usize) -> io::Result<()> {
+fn draw_help_footer(stdout: &mut Stdout, left: u16, width: usize, height: usize) -> io::Result<()> {
     if height >= 1 {
-        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
@@ -536,6 +574,7 @@ fn draw_launcher_footer(
     stdout: &mut Stdout,
     launcher: &Launcher,
     status: &str,
+    left: u16,
     width: usize,
     height: usize,
 ) -> io::Result<()> {
@@ -548,7 +587,7 @@ fn draw_launcher_footer(
         } else {
             status
         };
-        queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 2).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::Yellow),
@@ -559,7 +598,7 @@ fn draw_launcher_footer(
     if height >= 1 {
         let input_width = width.saturating_sub(2);
         let (view, cursor_column) = editor_view(&launcher.text, launcher.cursor, input_width);
-        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::Cyan),
@@ -570,7 +609,7 @@ fn draw_launcher_footer(
             ResetColor
         )?;
         queue!(stdout, Print(fit(&view, input_width)), Show)?;
-        let column = (2 + cursor_column).min(width.saturating_sub(1));
+        let column = usize::from(left) + (2 + cursor_column).min(width.saturating_sub(1));
         queue!(
             stdout,
             MoveTo(
@@ -585,6 +624,7 @@ fn draw_launcher_footer(
 fn draw_editor_status(
     stdout: &mut Stdout,
     status: &str,
+    left: u16,
     width: usize,
     height: usize,
 ) -> io::Result<()> {
@@ -594,7 +634,7 @@ fn draw_editor_status(
         } else {
             status
         };
-        queue!(stdout, MoveTo(0, u16::try_from(height - 2).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 2).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::Yellow),
@@ -603,7 +643,7 @@ fn draw_editor_status(
         )?;
     }
     if height >= 1 {
-        queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
+        queue!(stdout, MoveTo(left, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
@@ -636,11 +676,17 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
         if let Some((draft_index, guides, editor)) = &draft
             && *draft_index == index
         {
+            if guides.is_empty() && !lines.is_empty() {
+                lines.push(blank_line());
+            }
             lines.extend(editor_lines(editor, guides, width));
         }
         let Some(item) = visible.get(index) else {
             continue;
         };
+        if item.depth == 0 && !lines.is_empty() {
+            lines.push(blank_line());
+        }
         let selected = !draft_active && app.selected == Some(item.node.id);
         let selector = if selected { "› " } else { "  " };
         let indent = guide_prefix(&item.guides);
@@ -723,6 +769,7 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
             cursor: None,
             content_start: 2,
         });
+        lines.push(blank_line());
         lines.push(DisplayLine {
             selected: false,
             text: "  Press o to start writing".into(),
@@ -731,6 +778,15 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
         });
     }
     lines
+}
+
+fn blank_line() -> DisplayLine {
+    DisplayLine {
+        selected: false,
+        text: String::new(),
+        cursor: None,
+        content_start: 0,
+    }
 }
 
 fn draft_position(
