@@ -8,8 +8,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vrac::{NodeId, Placement};
 
 use super::{
-    App, BacklinkView, EditTarget, Editor, Launcher, LauncherItem, LauncherKind, ReferencePrompt,
-    TagPrompt, VisibleNode,
+    App, BacklinkView, EditTarget, Editor, Launcher, LauncherItem, LauncherKind, OUTLINE_INDENT,
+    ReferencePrompt, TagPrompt, VisibleNode,
 };
 
 const CONTENT_LEFT: usize = 2;
@@ -668,28 +668,22 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
             parent_id,
             placement,
         } => draft_position(&visible, app.focus, parent_id, placement)
-            .map(|(index, guides)| (index, guides, editor)),
+            .map(|(index, depth)| (index, depth, editor)),
         EditTarget::Existing(_) => None,
     });
     let mut lines = Vec::new();
     for index in 0..=visible.len() {
-        if let Some((draft_index, guides, editor)) = &draft
+        if let Some((draft_index, depth, editor)) = &draft
             && *draft_index == index
         {
-            if guides.is_empty() && !lines.is_empty() {
-                lines.push(blank_line());
-            }
-            lines.extend(editor_lines(editor, guides, width));
+            lines.extend(editor_lines(editor, *depth, width));
         }
         let Some(item) = visible.get(index) else {
             continue;
         };
-        if item.depth == 0 && !lines.is_empty() {
-            lines.push(blank_line());
-        }
         let selected = !draft_active && app.selected == Some(item.node.id);
         let selector = if selected { "› " } else { "  " };
-        let indent = guide_prefix(&item.guides);
+        let indent = guide_prefix(item.depth);
         let marker = if item.node.has_children {
             if app.expanded.contains(&item.node.id) {
                 "▾"
@@ -794,11 +788,11 @@ fn draft_position(
     focus: Option<NodeId>,
     parent_id: Option<NodeId>,
     placement: Placement,
-) -> Option<(usize, Vec<bool>)> {
+) -> Option<(usize, usize)> {
     match placement {
         Placement::Before(reference) => {
             let index = visible.iter().position(|item| item.node.id == reference)?;
-            Some((index, visible[index].guides.clone()))
+            Some((index, visible[index].depth))
         }
         Placement::After(reference) => {
             let index = visible.iter().position(|item| item.node.id == reference)?;
@@ -807,17 +801,15 @@ fn draft_position(
             while insertion < visible.len() && visible[insertion].depth > depth {
                 insertion += 1;
             }
-            Some((insertion, visible[index].guides.clone()))
+            Some((insertion, visible[index].depth))
         }
-        Placement::First if parent_id == focus => Some((0, Vec::new())),
+        Placement::First if parent_id == focus => Some((0, 0)),
         Placement::First => {
             let parent = parent_id?;
             let index = visible.iter().position(|item| item.node.id == parent)?;
-            let mut guides = visible[index].guides.clone();
-            guides.push(visible[index].has_following);
-            Some((index + 1, guides))
+            Some((index + 1, visible[index].depth + 1))
         }
-        Placement::Last if parent_id == focus => Some((visible.len(), Vec::new())),
+        Placement::Last if parent_id == focus => Some((visible.len(), 0)),
         Placement::Last => {
             let parent = parent_id?;
             let index = visible.iter().position(|item| item.node.id == parent)?;
@@ -826,15 +818,13 @@ fn draft_position(
             while insertion < visible.len() && visible[insertion].depth > depth {
                 insertion += 1;
             }
-            let mut guides = visible[index].guides.clone();
-            guides.push(visible[index].has_following);
-            Some((insertion, guides))
+            Some((insertion, visible[index].depth + 1))
         }
     }
 }
 
-fn editor_lines(editor: &Editor, guides: &[bool], width: usize) -> Vec<DisplayLine> {
-    let indent = guide_prefix(guides);
+fn editor_lines(editor: &Editor, depth: usize, width: usize) -> Vec<DisplayLine> {
+    let indent = guide_prefix(depth);
     let prefix = format!("› {indent}• ");
     let continuation = format!("  {indent}  ");
     let available = width
@@ -855,11 +845,13 @@ fn editor_lines(editor: &Editor, guides: &[bool], width: usize) -> Vec<DisplayLi
         .collect()
 }
 
-fn guide_prefix(guides: &[bool]) -> String {
-    guides
-        .iter()
-        .map(|visible| if *visible { "│ " } else { "  " })
-        .collect()
+fn guide_prefix(depth: usize) -> String {
+    let mut prefix = String::with_capacity(depth.saturating_mul(OUTLINE_INDENT));
+    for _ in 0..depth {
+        prefix.push('│');
+        prefix.extend(std::iter::repeat_n(' ', OUTLINE_INDENT - 1));
+    }
+    prefix
 }
 
 fn editor_text(editor: &Editor) -> String {

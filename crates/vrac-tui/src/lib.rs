@@ -47,6 +47,7 @@ use prompts::{
 
 const USAGE: &str = "Usage: vrac-tui [workspace-folder]";
 const SYNC_INTERVAL: Duration = Duration::from_secs(2);
+const OUTLINE_INDENT: usize = 4;
 
 pub fn run() -> Result<(), Box<dyn Error>> {
     let mut arguments = std::env::args_os().skip(1);
@@ -292,8 +293,6 @@ struct Branch {
 struct VisibleNode {
     node: Node,
     depth: usize,
-    guides: Vec<bool>,
-    has_following: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -482,44 +481,30 @@ impl App {
         let Some(root) = self.branches.get(&self.focus) else {
             return Vec::new();
         };
-        let root_count = root.nodes.len();
-        let root_has_more = root.next.is_some();
         let mut stack: Vec<_> = root
             .nodes
             .iter()
             .cloned()
-            .enumerate()
             .rev()
-            .map(|(index, node)| (node, 0, Vec::new(), index + 1 < root_count || root_has_more))
+            .map(|node| (node, 0))
             .collect();
         let mut visible = Vec::new();
 
-        while let Some((node, depth, guides, has_following)) = stack.pop() {
+        while let Some((node, depth)) = stack.pop() {
             let id = node.id;
-            visible.push(VisibleNode {
-                node,
-                depth,
-                guides: guides.clone(),
-                has_following,
-            });
+            visible.push(VisibleNode { node, depth });
             if !self.expanded.contains(&id) {
                 continue;
             }
             if let Some(branch) = self.branches.get(&Some(id)) {
-                let child_count = branch.nodes.len();
-                let branch_has_more = branch.next.is_some();
-                let mut child_guides = guides;
-                child_guides.push(has_following);
-                stack.extend(branch.nodes.iter().cloned().enumerate().rev().map(
-                    |(index, child)| {
-                        (
-                            child,
-                            depth + 1,
-                            child_guides.clone(),
-                            index + 1 < child_count || branch_has_more,
-                        )
-                    },
-                ));
+                stack.extend(
+                    branch
+                        .nodes
+                        .iter()
+                        .cloned()
+                        .rev()
+                        .map(|child| (child, depth + 1)),
+                );
             }
         }
 
@@ -1030,7 +1015,7 @@ impl App {
             None => 0,
         };
         self.viewport_width
-            .saturating_sub(4 + depth.saturating_mul(2))
+            .saturating_sub(4 + depth.saturating_mul(OUTLINE_INDENT))
             .max(1)
     }
 
@@ -2295,7 +2280,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_nodes_record_only_continuing_ancestor_guides() {
+    fn visible_nodes_record_depth_without_sibling_dependent_guides() {
         let (mut app, parent, _) = test_app();
         let following = app
             .engine
@@ -2309,14 +2294,14 @@ mod tests {
             .iter()
             .find(|item| item.node.parent_id == Some(parent.id))
             .unwrap();
-        assert_eq!(child.guides, [true]);
-        assert!(
+        assert_eq!(child.depth, 1);
+        assert_eq!(
             visible
                 .iter()
                 .find(|item| item.node.id == following.id)
                 .unwrap()
-                .guides
-                .is_empty()
+                .depth,
+            0
         );
     }
 
@@ -3306,18 +3291,29 @@ mod tests {
     }
 
     #[test]
-    fn top_level_groups_have_visual_space_between_them() {
-        let (app, _, _) = test_app();
-        let group_count = app
-            .visible_nodes()
-            .iter()
-            .filter(|item| item.depth == 0)
-            .count();
+    fn top_level_nodes_are_compact() {
+        let (mut app, _, _) = test_app();
+        app.engine
+            .create_node(CreateNode::new("Second root"))
+            .unwrap();
+        app.reload_branch(None).unwrap();
         let lines = display_lines(&app, 80);
 
-        assert_eq!(
-            lines.iter().filter(|line| line.text.is_empty()).count(),
-            group_count.saturating_sub(1)
-        );
+        assert!(lines.iter().any(|line| line.text.contains("Parent")));
+        assert!(lines.iter().any(|line| line.text.contains("Second root")));
+        assert!(lines.iter().all(|line| !line.text.is_empty()));
+    }
+
+    #[test]
+    fn an_only_child_still_has_its_parent_guide() {
+        let (mut app, parent, child) = test_app();
+        app.expand(parent.id).unwrap();
+
+        let lines = display_lines(&app, 80);
+        let child_line = lines
+            .iter()
+            .find(|line| line.text.contains(&child.text))
+            .unwrap();
+        assert!(child_line.text.starts_with("  │   • "));
     }
 }
