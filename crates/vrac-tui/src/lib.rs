@@ -1,3 +1,8 @@
+//! Keyboard-first terminal client for Vrac.
+//!
+//! This crate owns transient interaction and rendering state. Persistent data
+//! and every business mutation remain delegated to the `vrac` engine.
+
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io::{self, Stdout};
@@ -13,16 +18,17 @@ use crossterm::event::{
 use crossterm::execute;
 use crossterm::style::{Attribute, ResetColor, SetAttribute};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use unicode_width::UnicodeWidthChar;
 use vrac::{
     CreateNode, Cursor, Destination, Engine, Node, NodeId, Page, Placement, ReferenceInput,
 };
 
+mod commands;
+mod editor;
+mod performance;
+mod prompts;
 mod setup;
 mod ui;
 mod workspace;
-
-mod performance;
 
 #[doc(hidden)]
 pub use performance::run_reference_scenario;
@@ -32,6 +38,12 @@ use ui::draw;
 #[cfg(test)]
 use ui::{display_lines, draw_inline_content, split_content, wrap_text};
 use workspace::{OpenedWorkspace, Workspace, configured_folder, remember_folder};
+
+use commands::{COMMANDS, Command};
+use editor::{EditTarget, Editor, char_to_byte};
+use prompts::{
+    BacklinkView, Launcher, LauncherItem, LauncherKind, ReferencePrompt, TagPrompt, TagTarget,
+};
 
 const USAGE: &str = "Usage: vrac-tui [workspace-folder]";
 const SYNC_INTERVAL: Duration = Duration::from_secs(2);
@@ -298,462 +310,6 @@ enum SessionExit {
     ChooseWorkspace,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum EditTarget {
-    Existing(NodeId),
-    New {
-        parent_id: Option<NodeId>,
-        placement: Placement,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct Editor {
-    target: EditTarget,
-    text: String,
-    cursor: usize,
-    references: Vec<ReferenceInput>,
-    tags: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Command {
-    New,
-    NewBefore,
-    NewChild,
-    Zoom,
-    ZoomOut,
-    Today,
-    Root,
-    FocusParent,
-    FocusChild,
-    Toggle,
-    Indent,
-    Outdent,
-    Delete,
-    Copy,
-    Paste,
-    Undo,
-    Redo,
-    Tag,
-    Backlinks,
-    Sync,
-    Workspace,
-    Quit,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct CommandEntry {
-    command: Command,
-    name: &'static str,
-    hint: &'static str,
-}
-
-const COMMANDS: &[CommandEntry] = &[
-    CommandEntry {
-        command: Command::New,
-        name: "new",
-        hint: "create a sibling after the selected bullet",
-    },
-    CommandEntry {
-        command: Command::NewBefore,
-        name: "new_before",
-        hint: "create a sibling before the selected bullet",
-    },
-    CommandEntry {
-        command: Command::NewChild,
-        name: "new_child",
-        hint: "create a child under the selected bullet",
-    },
-    CommandEntry {
-        command: Command::Zoom,
-        name: "zoom",
-        hint: "focus the selected bullet",
-    },
-    CommandEntry {
-        command: Command::ZoomOut,
-        name: "zoom_out",
-        hint: "return to the parent view",
-    },
-    CommandEntry {
-        command: Command::Today,
-        name: "today",
-        hint: "open today's Journal page",
-    },
-    CommandEntry {
-        command: Command::Root,
-        name: "root",
-        hint: "open the workspace root",
-    },
-    CommandEntry {
-        command: Command::FocusParent,
-        name: "focus_parent",
-        hint: "collapse or select the parent bullet",
-    },
-    CommandEntry {
-        command: Command::FocusChild,
-        name: "focus_child",
-        hint: "expand or select the first child",
-    },
-    CommandEntry {
-        command: Command::Toggle,
-        name: "toggle",
-        hint: "expand or collapse the selected bullet",
-    },
-    CommandEntry {
-        command: Command::Indent,
-        name: "indent",
-        hint: "move the bullet under its previous sibling",
-    },
-    CommandEntry {
-        command: Command::Outdent,
-        name: "outdent",
-        hint: "move the bullet after its parent",
-    },
-    CommandEntry {
-        command: Command::Delete,
-        name: "delete",
-        hint: "copy and delete the selected subtree",
-    },
-    CommandEntry {
-        command: Command::Copy,
-        name: "copy",
-        hint: "copy the selected subtree",
-    },
-    CommandEntry {
-        command: Command::Paste,
-        name: "paste",
-        hint: "paste after the selected bullet",
-    },
-    CommandEntry {
-        command: Command::Undo,
-        name: "undo",
-        hint: "undo the latest change",
-    },
-    CommandEntry {
-        command: Command::Redo,
-        name: "redo",
-        hint: "redo the latest undone change",
-    },
-    CommandEntry {
-        command: Command::Tag,
-        name: "tag",
-        hint: "open tag completion for the selected bullet",
-    },
-    CommandEntry {
-        command: Command::Backlinks,
-        name: "backlinks",
-        hint: "show references to the selected bullet",
-    },
-    CommandEntry {
-        command: Command::Sync,
-        name: "sync",
-        hint: "synchronize the current workspace now",
-    },
-    CommandEntry {
-        command: Command::Workspace,
-        name: "workspace",
-        hint: "choose or create another workspace folder",
-    },
-    CommandEntry {
-        command: Command::Quit,
-        name: "quit",
-        hint: "close Vrac TUI",
-    },
-];
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum LauncherItem {
-    Command(CommandEntry),
-    Node(Node),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PromptKind {
-    Search,
-    Commands,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct Search {
-    kind: PromptKind,
-    text: String,
-    cursor: usize,
-    items: Vec<LauncherItem>,
-    selected: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct TagPrompt {
-    target: TagTarget,
-    query: String,
-    results: Vec<String>,
-    selected: usize,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum TagTarget {
-    Node(NodeId),
-    Draft,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct BacklinkView {
-    target_id: NodeId,
-    contexts: Vec<Vec<Node>>,
-    next: Option<Cursor>,
-    selected: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ReferencePrompt {
-    query: String,
-    results: Vec<Node>,
-    selected: usize,
-}
-
-impl Search {
-    fn new(kind: PromptKind) -> Self {
-        Self {
-            kind,
-            text: String::new(),
-            cursor: 0,
-            items: Vec::new(),
-            selected: 0,
-        }
-    }
-
-    fn insert(&mut self, character: char) {
-        let byte = char_to_byte(&self.text, self.cursor);
-        self.text.insert(byte, character);
-        self.cursor += 1;
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let start = char_to_byte(&self.text, self.cursor - 1);
-        let end = char_to_byte(&self.text, self.cursor);
-        self.text.replace_range(start..end, "");
-        self.cursor -= 1;
-    }
-
-    fn delete(&mut self) {
-        if self.cursor == self.text.chars().count() {
-            return;
-        }
-        let start = char_to_byte(&self.text, self.cursor);
-        let end = char_to_byte(&self.text, self.cursor + 1);
-        self.text.replace_range(start..end, "");
-    }
-}
-
-fn word_character(character: char) -> bool {
-    character.is_alphanumeric() || character == '_'
-}
-
-fn shown_width(character: char) -> usize {
-    UnicodeWidthChar::width(if character.is_control() {
-        '↵'
-    } else {
-        character
-    })
-    .unwrap_or(0)
-}
-
-fn caret_positions(text: &str, width: usize) -> Vec<(usize, usize)> {
-    let width = width.max(1);
-    let characters = text.chars().collect::<Vec<_>>();
-    let mut positions = Vec::with_capacity(characters.len() + 1);
-    let mut row = 0;
-    let mut column = 0;
-    for index in 0..=characters.len() {
-        let next_width = characters.get(index).copied().map(shown_width);
-        if column == width && column > 0
-            || next_width.is_some_and(|next| column > 0 && column + next > width)
-        {
-            row += 1;
-            column = 0;
-        }
-        positions.push((row, column));
-        if let Some(next_width) = next_width {
-            column += next_width;
-        }
-    }
-    positions
-}
-
-impl Editor {
-    fn new(
-        target: EditTarget,
-        text: String,
-        references: Vec<ReferenceInput>,
-        tags: Vec<String>,
-    ) -> Self {
-        let cursor = text.chars().count();
-        Self {
-            target,
-            text,
-            cursor,
-            references,
-            tags,
-        }
-    }
-
-    fn empty(target: EditTarget) -> Self {
-        Self::new(target, String::new(), Vec::new(), Vec::new())
-    }
-
-    fn insert(&mut self, character: char) {
-        let byte = char_to_byte(&self.text, self.cursor);
-        let added = character.len_utf8();
-        self.references.retain_mut(|reference| {
-            let token_start = reference.label_start.saturating_sub(2);
-            let token_end = reference.label_end.saturating_add(2);
-            if byte > token_start && byte < token_end {
-                return false;
-            }
-            if byte <= token_start {
-                reference.label_start += added;
-                reference.label_end += added;
-            }
-            true
-        });
-        self.text.insert(byte, character);
-        self.cursor += 1;
-    }
-
-    fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let start = char_to_byte(&self.text, self.cursor - 1);
-        let end = char_to_byte(&self.text, self.cursor);
-        self.remove_range(start, end);
-        self.text.replace_range(start..end, "");
-        self.cursor -= 1;
-    }
-
-    fn delete(&mut self) {
-        if self.cursor == self.text.chars().count() {
-            return;
-        }
-        let start = char_to_byte(&self.text, self.cursor);
-        let end = char_to_byte(&self.text, self.cursor + 1);
-        self.remove_range(start, end);
-        self.text.replace_range(start..end, "");
-    }
-
-    fn insert_text(&mut self, text: &str) {
-        for character in text.chars() {
-            self.insert(character);
-        }
-    }
-
-    fn move_word(&mut self, direction: isize) {
-        let characters = self.text.chars().collect::<Vec<_>>();
-        if direction < 0 {
-            while self.cursor > 0 && characters[self.cursor - 1].is_whitespace() {
-                self.cursor -= 1;
-            }
-            if self.cursor == 0 {
-                return;
-            }
-            let word = word_character(characters[self.cursor - 1]);
-            while self.cursor > 0
-                && !characters[self.cursor - 1].is_whitespace()
-                && word_character(characters[self.cursor - 1]) == word
-            {
-                self.cursor -= 1;
-            }
-        } else {
-            while self.cursor < characters.len() && characters[self.cursor].is_whitespace() {
-                self.cursor += 1;
-            }
-            if self.cursor == characters.len() {
-                return;
-            }
-            let word = word_character(characters[self.cursor]);
-            while self.cursor < characters.len()
-                && !characters[self.cursor].is_whitespace()
-                && word_character(characters[self.cursor]) == word
-            {
-                self.cursor += 1;
-            }
-        }
-    }
-
-    fn backspace_word(&mut self) {
-        let end = self.cursor;
-        self.move_word(-1);
-        let start = self.cursor;
-        if start == end {
-            return;
-        }
-        let start_byte = char_to_byte(&self.text, start);
-        let end_byte = char_to_byte(&self.text, end);
-        self.remove_range(start_byte, end_byte);
-        self.text.replace_range(start_byte..end_byte, "");
-    }
-
-    fn move_vertical(&mut self, direction: isize, width: usize) -> bool {
-        let positions = caret_positions(&self.text, width);
-        let (row, column) = positions[self.cursor];
-        let target_row = row.saturating_add_signed(direction);
-        if target_row == row {
-            return false;
-        }
-        if let Some((index, _)) = positions
-            .iter()
-            .enumerate()
-            .filter(|(_, (candidate_row, _))| *candidate_row == target_row)
-            .min_by_key(|(index, (_, candidate_column))| {
-                (
-                    candidate_column.abs_diff(column),
-                    index.abs_diff(self.cursor),
-                )
-            })
-        {
-            self.cursor = index;
-            return true;
-        }
-        false
-    }
-
-    fn move_to_visual_edge(&mut self, end: bool, width: usize) {
-        let positions = caret_positions(&self.text, width);
-        let row = positions[self.cursor].0;
-        let mut candidates = positions
-            .iter()
-            .enumerate()
-            .filter(|(_, (candidate_row, _))| *candidate_row == row);
-        if let Some((index, _)) = if end {
-            candidates.next_back()
-        } else {
-            candidates.next()
-        } {
-            self.cursor = index;
-        }
-    }
-
-    fn remove_range(&mut self, start: usize, end: usize) {
-        let removed = end - start;
-        self.references.retain_mut(|reference| {
-            let token_start = reference.label_start.saturating_sub(2);
-            let token_end = reference.label_end.saturating_add(2);
-            if start < token_end && end > token_start {
-                return false;
-            }
-            if end <= token_start {
-                reference.label_start -= removed;
-                reference.label_end -= removed;
-            }
-            true
-        });
-    }
-}
-
 struct App {
     engine: Engine,
     branches: HashMap<Option<NodeId>, Branch>,
@@ -762,7 +318,7 @@ struct App {
     focus_path: Vec<Node>,
     selected: Option<NodeId>,
     editor: Option<Editor>,
-    search: Option<Search>,
+    launcher: Option<Launcher>,
     tag_prompt: Option<TagPrompt>,
     backlinks: Option<BacklinkView>,
     reference_prompt: Option<ReferencePrompt>,
@@ -789,7 +345,7 @@ impl App {
             focus_path: Vec::new(),
             selected: None,
             editor: None,
-            search: None,
+            launcher: None,
             tag_prompt: None,
             backlinks: None,
             reference_prompt: None,
@@ -996,8 +552,8 @@ impl App {
             self.handle_backlink_key(key)
         } else if self.tag_prompt.is_some() {
             self.handle_tag_key(key)
-        } else if self.search.is_some() {
-            self.handle_search_key(key)
+        } else if self.launcher.is_some() {
+            self.handle_launcher_key(key)
         } else if self.editor.is_some() {
             self.handle_editor_key(key)
         } else {
@@ -1030,11 +586,11 @@ impl App {
                     .filter(|character| !character.is_whitespace() && *character != '#'),
             );
             self.refresh_tag_prompt()?;
-        } else if let Some(search) = &mut self.search {
+        } else if let Some(launcher) = &mut self.launcher {
             for character in pasted.chars() {
-                search.insert(character);
+                launcher.insert(character);
             }
-            self.refresh_search()?;
+            self.refresh_launcher()?;
         } else if let Some(editor) = &mut self.editor {
             editor.insert_text(&pasted);
         }
@@ -1072,8 +628,8 @@ impl App {
             KeyCode::Char('H') => self.zoom_out()?,
             KeyCode::Char(' ') => self.toggle_selected()?,
             KeyCode::Enter => self.zoom_selected()?,
-            KeyCode::Char('/') => self.start_search(PromptKind::Search)?,
-            KeyCode::Char(':') => self.start_search(PromptKind::Commands)?,
+            KeyCode::Char('/') => self.start_launcher(LauncherKind::Search)?,
+            KeyCode::Char(':') => self.start_launcher(LauncherKind::Commands)?,
             KeyCode::Char('#') => self.start_tag_prompt()?,
             KeyCode::Char('b') => self.start_backlinks()?,
             KeyCode::Char('?') => {
@@ -1103,53 +659,57 @@ impl App {
         Ok(Action::Continue)
     }
 
-    fn handle_search_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+    fn handle_launcher_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
         match key.code {
             KeyCode::Esc => {
-                self.search = None;
+                self.launcher = None;
                 self.status.clear();
                 self.scroll = 0;
             }
             KeyCode::Enter => return self.commit_launcher(),
             KeyCode::Up => {
-                let search = self.search.as_mut().expect("search is active");
-                search.selected = search.selected.saturating_sub(1);
+                let launcher = self.launcher.as_mut().expect("launcher is active");
+                launcher.selected = launcher.selected.saturating_sub(1);
             }
             KeyCode::Down => {
-                let search = self.search.as_mut().expect("search is active");
-                search.selected = (search.selected + 1).min(search.items.len().saturating_sub(1));
+                let launcher = self.launcher.as_mut().expect("launcher is active");
+                launcher.selected =
+                    (launcher.selected + 1).min(launcher.items.len().saturating_sub(1));
             }
             KeyCode::Left => {
-                let search = self.search.as_mut().expect("search is active");
-                search.cursor = search.cursor.saturating_sub(1);
+                let launcher = self.launcher.as_mut().expect("launcher is active");
+                launcher.cursor = launcher.cursor.saturating_sub(1);
             }
             KeyCode::Right => {
-                let search = self.search.as_mut().expect("search is active");
-                search.cursor = (search.cursor + 1).min(search.text.chars().count());
+                let launcher = self.launcher.as_mut().expect("launcher is active");
+                launcher.cursor = (launcher.cursor + 1).min(launcher.text.chars().count());
             }
-            KeyCode::Home => self.search.as_mut().expect("search is active").cursor = 0,
+            KeyCode::Home => self.launcher.as_mut().expect("launcher is active").cursor = 0,
             KeyCode::End => {
-                let search = self.search.as_mut().expect("search is active");
-                search.cursor = search.text.chars().count();
+                let launcher = self.launcher.as_mut().expect("launcher is active");
+                launcher.cursor = launcher.text.chars().count();
             }
             KeyCode::Backspace => {
-                self.search.as_mut().expect("search is active").backspace();
-                self.refresh_search()?;
+                self.launcher
+                    .as_mut()
+                    .expect("launcher is active")
+                    .backspace();
+                self.refresh_launcher()?;
             }
             KeyCode::Delete => {
-                self.search.as_mut().expect("search is active").delete();
-                self.refresh_search()?;
+                self.launcher.as_mut().expect("launcher is active").delete();
+                self.refresh_launcher()?;
             }
             KeyCode::Char(character)
                 if !key.modifiers.intersects(
                     KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
                 ) =>
             {
-                self.search
+                self.launcher
                     .as_mut()
-                    .expect("search is active")
+                    .expect("launcher is active")
                     .insert(character);
-                self.refresh_search()?;
+                self.refresh_launcher()?;
             }
             _ => {}
         }
@@ -1630,20 +1190,20 @@ impl App {
         Ok(())
     }
 
-    fn start_search(&mut self, kind: PromptKind) -> vrac::Result<()> {
-        self.search = Some(Search::new(kind));
+    fn start_launcher(&mut self, kind: LauncherKind) -> vrac::Result<()> {
+        self.launcher = Some(Launcher::new(kind));
         self.status.clear();
         self.scroll = 0;
-        self.refresh_search()
+        self.refresh_launcher()
     }
 
-    fn refresh_search(&mut self) -> vrac::Result<()> {
-        let search = self.search.as_ref().expect("search is active");
-        let kind = search.kind;
-        let query = search.text.clone();
+    fn refresh_launcher(&mut self) -> vrac::Result<()> {
+        let launcher = self.launcher.as_ref().expect("launcher is active");
+        let kind = launcher.kind;
+        let query = launcher.text.clone();
         let normalized = query.trim().to_lowercase();
         let items = match kind {
-            PromptKind::Commands => COMMANDS
+            LauncherKind::Commands => COMMANDS
                 .iter()
                 .filter(|entry| {
                     normalized.is_empty()
@@ -1653,28 +1213,28 @@ impl App {
                 .copied()
                 .map(LauncherItem::Command)
                 .collect(),
-            PromptKind::Search if normalized.chars().count() >= 2 => self
+            LauncherKind::Search if normalized.chars().count() >= 2 => self
                 .engine
                 .search(&query, 20)?
                 .into_iter()
                 .map(LauncherItem::Node)
                 .collect(),
-            PromptKind::Search => Vec::new(),
+            LauncherKind::Search => Vec::new(),
         };
-        let search = self.search.as_mut().expect("search is active");
-        search.items = items;
-        search.selected = 0;
+        let launcher = self.launcher.as_mut().expect("launcher is active");
+        launcher.items = items;
+        launcher.selected = 0;
         self.status.clear();
         Ok(())
     }
 
     fn commit_launcher(&mut self) -> vrac::Result<Action> {
         let item = self
-            .search
+            .launcher
             .as_ref()
-            .and_then(|search| search.items.get(search.selected))
+            .and_then(|launcher| launcher.items.get(launcher.selected))
             .cloned();
-        self.search = None;
+        self.launcher = None;
         self.scroll = 0;
         match item {
             Some(LauncherItem::Command(entry)) => self.run_command(entry.command),
@@ -2326,8 +1886,8 @@ impl App {
         }) {
             self.selected = selected;
         }
-        if self.search.is_some() {
-            self.refresh_search()?;
+        if self.launcher.is_some() {
+            self.refresh_launcher()?;
         }
         if let Some(TagTarget::Node(id)) = self.tag_prompt.as_ref().map(|prompt| prompt.target)
             && self.engine.node(id)?.is_none()
@@ -2553,12 +2113,6 @@ impl App {
         }
         result
     }
-}
-
-fn char_to_byte(text: &str, character: usize) -> usize {
-    text.char_indices()
-        .nth(character)
-        .map_or(text.len(), |(byte, _)| byte)
 }
 
 #[cfg(test)]
@@ -2864,17 +2418,17 @@ mod tests {
         app.engine
             .set_text(parent.id, "Vrac concept".into())
             .unwrap();
-        app.start_search(PromptKind::Search).unwrap();
+        app.start_launcher(LauncherKind::Search).unwrap();
         for character in "vrac".chars() {
-            app.search.as_mut().unwrap().insert(character);
+            app.launcher.as_mut().unwrap().insert(character);
         }
-        app.refresh_search().unwrap();
+        app.refresh_launcher().unwrap();
 
         assert!(matches!(
-            &app.search.as_ref().unwrap().items[0],
+            &app.launcher.as_ref().unwrap().items[0],
             LauncherItem::Node(node) if node.id == parent.id
         ));
-        app.handle_search_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+        app.handle_launcher_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
             .unwrap();
         assert_eq!(app.focus, Some(parent.id));
         assert_eq!(app.focus_label(), "root › Vrac concept");
@@ -3007,13 +2561,13 @@ mod tests {
     #[test]
     fn sync_reload_refreshes_open_search_results() {
         let (mut app, parent, _) = test_app();
-        app.start_search(PromptKind::Search).unwrap();
+        app.start_launcher(LauncherKind::Search).unwrap();
         for character in "Parent".chars() {
-            app.search.as_mut().unwrap().insert(character);
+            app.launcher.as_mut().unwrap().insert(character);
         }
-        app.refresh_search().unwrap();
+        app.refresh_launcher().unwrap();
         assert!(
-            app.search
+            app.launcher
                 .as_ref()
                 .unwrap()
                 .items
@@ -3027,7 +2581,7 @@ mod tests {
         app.reload_after_sync().unwrap();
 
         assert!(
-            app.search
+            app.launcher
                 .as_ref()
                 .unwrap()
                 .items
@@ -3500,26 +3054,26 @@ mod tests {
 
         app.handle_normal_key(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE))
             .unwrap();
-        assert_eq!(app.search.as_ref().unwrap().kind, PromptKind::Search);
+        assert_eq!(app.launcher.as_ref().unwrap().kind, LauncherKind::Search);
         assert!(
-            app.search
+            app.launcher
                 .as_ref()
                 .unwrap()
                 .items
                 .iter()
                 .all(|item| matches!(item, LauncherItem::Node(_)))
         );
-        app.handle_search_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        app.handle_launcher_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
             .unwrap();
 
         app.handle_normal_key(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::NONE))
             .unwrap();
-        assert_eq!(app.search.as_ref().unwrap().kind, PromptKind::Commands);
-        assert!(app.search.as_ref().unwrap().items.iter().any(
+        assert_eq!(app.launcher.as_ref().unwrap().kind, LauncherKind::Commands);
+        assert!(app.launcher.as_ref().unwrap().items.iter().any(
             |item| matches!(item, LauncherItem::Command(entry) if entry.command == Command::New)
         ));
         assert!(
-            app.search
+            app.launcher
                 .as_ref()
                 .unwrap()
                 .items

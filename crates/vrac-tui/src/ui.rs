@@ -9,7 +9,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vrac::{NodeId, Placement};
 
 use super::{
-    App, BacklinkView, EditTarget, Editor, LauncherItem, PromptKind, ReferencePrompt, Search,
+    App, BacklinkView, EditTarget, Editor, Launcher, LauncherItem, LauncherKind, ReferencePrompt,
     TagPrompt, VisibleNode,
 };
 
@@ -83,8 +83,8 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
         draw_backlink_footer(stdout, &app.status, width, height)?;
     } else if let Some(prompt) = &app.tag_prompt {
         draw_tag_footer(stdout, prompt, &app.status, width, height)?;
-    } else if let Some(search) = &app.search {
-        draw_search_footer(stdout, search, &app.status, width, height)?;
+    } else if let Some(launcher) = &app.launcher {
+        draw_launcher_footer(stdout, launcher, &app.status, width, height)?;
     } else if let Some(prompt) = &app.reference_prompt {
         draw_reference_footer(stdout, prompt, width, height)?;
         if let Some((column, row)) = inline_cursor {
@@ -117,10 +117,10 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App, path: &Path) -> io::Resul
 }
 
 pub(super) fn frame_lines(app: &mut App, width: usize, body_height: usize) -> Vec<DisplayLine> {
-    let lines = match (app.help, &app.backlinks, &app.search) {
+    let lines = match (app.help, &app.backlinks, &app.launcher) {
         (true, _, _) => help_lines(),
         (false, Some(view), _) => backlink_lines(view, width),
-        (false, None, Some(search)) => search_lines(search, width),
+        (false, None, Some(launcher)) => launcher_lines(launcher, width),
         (false, None, None) => display_lines(app, width),
     };
     let selected_start = lines
@@ -532,18 +532,18 @@ fn help_lines() -> Vec<DisplayLine> {
     .collect()
 }
 
-fn draw_search_footer(
+fn draw_launcher_footer(
     stdout: &mut Stdout,
-    search: &Search,
+    launcher: &Launcher,
     status: &str,
     width: usize,
     height: usize,
 ) -> io::Result<()> {
     if height >= 2 {
         let label = if status.is_empty() {
-            match search.kind {
-                PromptKind::Search => "SEARCH  ↑/↓ select · Enter open · Esc cancel",
-                PromptKind::Commands => "COMMANDS  ↑/↓ select · Enter run · Esc cancel",
+            match launcher.kind {
+                LauncherKind::Search => "SEARCH  ↑/↓ select · Enter open · Esc cancel",
+                LauncherKind::Commands => "COMMANDS  ↑/↓ select · Enter run · Esc cancel",
             }
         } else {
             status
@@ -558,14 +558,14 @@ fn draw_search_footer(
     }
     if height >= 1 {
         let input_width = width.saturating_sub(2);
-        let (view, cursor_column) = editor_view(&search.text, search.cursor, input_width);
+        let (view, cursor_column) = editor_view(&launcher.text, launcher.cursor, input_width);
         queue!(stdout, MoveTo(0, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::Cyan),
-            Print(match search.kind {
-                PromptKind::Search => "/ ",
-                PromptKind::Commands => ": ",
+            Print(match launcher.kind {
+                LauncherKind::Search => "/ ",
+                LauncherKind::Commands => ": ",
             }),
             ResetColor
         )?;
@@ -879,25 +879,27 @@ fn wrap_editor_text(text: &str, width: usize, cursor: usize) -> Vec<(String, Opt
     lines
 }
 
-fn search_lines(search: &Search, width: usize) -> Vec<DisplayLine> {
-    if search.items.is_empty() {
+fn launcher_lines(launcher: &Launcher, width: usize) -> Vec<DisplayLine> {
+    if launcher.items.is_empty() {
         return vec![DisplayLine {
             selected: false,
             cursor: None,
             content_start: 2,
-            text: if search.kind == PromptKind::Search && search.text.trim().chars().count() < 2 {
+            text: if launcher.kind == LauncherKind::Search
+                && launcher.text.trim().chars().count() < 2
+            {
                 "  Type at least two characters".into()
             } else {
                 "  No results".into()
             },
         }];
     }
-    search
+    launcher
         .items
         .iter()
         .enumerate()
         .map(|(index, item)| {
-            let selected = index == search.selected;
+            let selected = index == launcher.selected;
             let text = match item {
                 LauncherItem::Command(entry) => {
                     format!(":{}  — {}", entry.name, entry.hint)

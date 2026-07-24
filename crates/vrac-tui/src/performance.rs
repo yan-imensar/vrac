@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use vrac::Engine;
 
 use super::ui::{draw_display_line, frame_lines};
-use super::{App, PromptKind};
+use super::{App, LauncherKind};
 
 const SAMPLE_COUNT: usize = 100;
 const RELOAD_COUNT: usize = 20;
@@ -64,16 +64,16 @@ pub fn run_reference_scenario(path: &Path) -> Result<Engine, Box<dyn StdError>> 
     )?;
 
     let search_p95 = measure_p95(|| {
-        app.start_search(PromptKind::Search)?;
+        app.start_launcher(LauncherKind::Search)?;
         for character in "decision 42".chars() {
-            app.search
+            app.launcher
                 .as_mut()
                 .expect("search was just opened")
                 .insert(character);
         }
-        app.refresh_search()?;
+        app.refresh_launcher()?;
         render_frame(&mut app)?;
-        app.search = None;
+        app.launcher = None;
         Ok(())
     })?;
     record_budgeted("search_and_frame_p95", search_p95, INTERACTIVE_BUDGET)?;

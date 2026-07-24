@@ -6,6 +6,8 @@ product, and a frozen Tauri/Svelte desktop prototype.
 
 Contribution rules are documented in [`AGENTS.md`](AGENTS.md).
 The current SQLite workspace format is documented in [`FORMAT.md`](FORMAT.md).
+The V1 release gates and ordered follow-up work are documented in
+[`ROADMAP.md`](ROADMAP.md).
 
 ## Layout
 

@@ -3,6 +3,8 @@ name = "vrac-tui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+description = "Keyboard-first terminal client for Vrac"
 
 [dependencies]
 arboard = { version = "3.6.1", default-features = false }
