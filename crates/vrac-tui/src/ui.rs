@@ -608,7 +608,7 @@ fn draw_editor_status(
             stdout,
             SetForegroundColor(Color::DarkGrey),
             Print(fit(
-                "arrows move · Alt-←/→ words · Home/End line · # tag · [[ ref · Esc normal",
+                "↑/↓ lines/bullets · ←/→ caret · Alt-←/→ words · # tag · [[ ref · Esc normal",
                 width
             )),
             ResetColor

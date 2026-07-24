@@ -697,12 +697,12 @@ impl Editor {
         self.text.replace_range(start_byte..end_byte, "");
     }
 
-    fn move_vertical(&mut self, direction: isize, width: usize) {
+    fn move_vertical(&mut self, direction: isize, width: usize) -> bool {
         let positions = caret_positions(&self.text, width);
         let (row, column) = positions[self.cursor];
         let target_row = row.saturating_add_signed(direction);
         if target_row == row {
-            return;
+            return false;
         }
         if let Some((index, _)) = positions
             .iter()
@@ -716,7 +716,9 @@ impl Editor {
             })
         {
             self.cursor = index;
+            return true;
         }
+        false
     }
 
     fn move_to_visual_edge(&mut self, end: bool, width: usize) {
@@ -1082,7 +1084,7 @@ impl App {
             KeyCode::Char('a') | KeyCode::Char('A') => self.start_edit(),
             KeyCode::Char('o') => self.start_new_sibling(),
             KeyCode::Char('O') => self.start_new_before(),
-            KeyCode::Char('c') => self.start_new_child(),
+            KeyCode::Char('c') => self.start_new_child()?,
             KeyCode::Char('y') => {
                 self.pending_key = Some('y');
                 self.status = "y".into();
@@ -1326,16 +1328,26 @@ impl App {
             KeyCode::Enter => self.create_sibling_from_editor()?,
             KeyCode::Tab => self.indent_editor()?,
             KeyCode::BackTab => self.outdent_editor()?,
-            KeyCode::Up => self
-                .editor
-                .as_mut()
-                .expect("editor is active")
-                .move_vertical(-1, editor_width),
-            KeyCode::Down => self
-                .editor
-                .as_mut()
-                .expect("editor is active")
-                .move_vertical(1, editor_width),
+            KeyCode::Up => {
+                let moved = self
+                    .editor
+                    .as_mut()
+                    .expect("editor is active")
+                    .move_vertical(-1, editor_width);
+                if !moved {
+                    self.move_editor_to_adjacent(-1)?;
+                }
+            }
+            KeyCode::Down => {
+                let moved = self
+                    .editor
+                    .as_mut()
+                    .expect("editor is active")
+                    .move_vertical(1, editor_width);
+                if !moved {
+                    self.move_editor_to_adjacent(1)?;
+                }
+            }
             KeyCode::Left if word_modifier => self
                 .editor
                 .as_mut()
@@ -1460,6 +1472,49 @@ impl App {
         self.viewport_width
             .saturating_sub(4 + depth.saturating_mul(2))
             .max(1)
+    }
+
+    fn move_editor_to_adjacent(&mut self, direction: isize) -> vrac::Result<()> {
+        if self.editor.as_ref().is_some_and(|editor| {
+            matches!(editor.target, EditTarget::New { .. }) && editor.text.is_empty()
+        }) {
+            return Ok(());
+        }
+        let Some(saved) = self.commit_editor()? else {
+            return Ok(());
+        };
+        if !self.is_visible(saved.id) {
+            return Ok(());
+        }
+        self.selected = Some(saved.id);
+        if direction > 0 {
+            self.load_next_page_at_selection()?;
+        }
+        let visible = self.visible_nodes();
+        let Some(index) = visible.iter().position(|item| item.node.id == saved.id) else {
+            return Ok(());
+        };
+        let adjacent = if direction < 0 {
+            visible[..index]
+                .iter()
+                .rev()
+                .find(|item| item.node.system.is_none())
+        } else {
+            visible[index + 1..]
+                .iter()
+                .find(|item| item.node.system.is_none())
+        };
+        let target = adjacent.map_or(saved.id, |item| item.node.id);
+        self.selected = Some(target);
+        self.resume_editing(target)?;
+        if direction > 0 {
+            self.editor.as_mut().expect("editor was resumed").cursor = 0;
+        }
+        Ok(())
+    }
+
+    fn is_visible(&self, id: NodeId) -> bool {
+        self.visible_nodes().iter().any(|item| item.node.id == id)
     }
 
     fn move_selection(&mut self, direction: isize) -> vrac::Result<()> {
@@ -1635,7 +1690,7 @@ impl App {
         match command {
             Command::New => self.start_new_sibling(),
             Command::NewBefore => self.start_new_before(),
-            Command::NewChild => self.start_new_child(),
+            Command::NewChild => self.start_new_child()?,
             Command::Zoom => self.zoom_selected()?,
             Command::ZoomOut => self.zoom_out()?,
             Command::Today => {
@@ -1957,6 +2012,9 @@ impl App {
         let Some(saved) = self.commit_editor()? else {
             return Ok(());
         };
+        if !self.is_visible(saved.id) {
+            return Ok(());
+        }
         self.selected = Some(saved.id);
         self.editor = Some(Editor::empty(EditTarget::New {
             parent_id: saved.parent_id,
@@ -2002,7 +2060,10 @@ impl App {
         };
         self.selected = Some(saved.id);
         self.indent_selected()?;
-        self.resume_editing(saved.id)
+        if self.is_visible(saved.id) {
+            self.resume_editing(saved.id)?;
+        }
+        Ok(())
     }
 
     fn outdent_editor(&mut self) -> vrac::Result<()> {
@@ -2014,7 +2075,10 @@ impl App {
         };
         self.selected = Some(saved.id);
         self.outdent_selected()?;
-        self.resume_editing(saved.id)
+        if self.is_visible(saved.id) {
+            self.resume_editing(saved.id)?;
+        }
+        Ok(())
     }
 
     fn adjust_new_draft(&mut self, indent: bool) -> vrac::Result<bool> {
@@ -2066,7 +2130,7 @@ impl App {
             ..
         } = next_target
         {
-            self.expanded.insert(parent_id);
+            self.expand(parent_id)?;
         }
         self.editor.as_mut().expect("editor is active").target = next_target;
         self.status.clear();
@@ -2128,8 +2192,13 @@ impl App {
         self.reload_changed_branch(old_parent)?;
         self.reload_changed_branch(Some(new_parent))?;
         self.expanded.insert(new_parent);
-        self.selected = Some(node.id);
-        self.status = "Indented".into();
+        if self.is_visible(node.id) {
+            self.selected = Some(node.id);
+            self.status = "Indented".into();
+        } else {
+            self.selected = Some(new_parent);
+            self.status = "Indented outside the loaded page".into();
+        }
         Ok(())
     }
 
@@ -2383,15 +2452,19 @@ impl App {
         }
     }
 
-    fn start_new_child(&mut self) {
+    fn start_new_child(&mut self) -> vrac::Result<()> {
         let Some(node) = self.selected_node() else {
-            return;
+            return Ok(());
         };
+        if node.has_children {
+            self.expand(node.id)?;
+        }
         self.editor = Some(Editor::empty(EditTarget::New {
             parent_id: Some(node.id),
-            placement: Placement::Last,
+            placement: Placement::First,
         }));
         self.status.clear();
+        Ok(())
     }
 
     fn commit_editor(&mut self) -> vrac::Result<Option<Node>> {
@@ -2431,6 +2504,17 @@ impl App {
                     input.placement = placement;
                     input.references = editor.references.clone();
                     input.tags = editor.tags.clone();
+                    let restore_count = self.branches.get(&parent_id).map_or(0, |branch| {
+                        let previous_count = branch.nodes.len();
+                        let needs_next = match placement {
+                            Placement::After(reference) => {
+                                branch.nodes.last().is_some_and(|node| node.id == reference)
+                            }
+                            Placement::Last => branch.next.is_none(),
+                            Placement::First | Placement::Before(_) => false,
+                        };
+                        previous_count + usize::from(needs_next)
+                    });
                     let may_materialize_root = parent_id.is_some()
                         && editor
                             .text
@@ -2438,6 +2522,7 @@ impl App {
                             .is_some_and(|(_, rest)| rest.contains("]]"));
                     let created = self.engine.create_node(input)?;
                     self.reload_changed_branch(parent_id)?;
+                    self.load_to_count(parent_id, restore_count)?;
                     if let Some(parent_id) = parent_id {
                         if may_materialize_root && self.branches.contains_key(&None) {
                             self.reload_branch(None)?;
@@ -2447,11 +2532,17 @@ impl App {
                     let loaded = self.branches.get(&parent_id).is_some_and(|branch| {
                         branch.nodes.iter().any(|node| node.id == created.id)
                     });
-                    self.selected = if loaded { Some(created.id) } else { parent_id };
+                    let fallback = match placement {
+                        Placement::Before(reference) | Placement::After(reference) => {
+                            Some(reference)
+                        }
+                        Placement::First | Placement::Last => parent_id,
+                    };
+                    self.selected = if loaded { Some(created.id) } else { fallback };
                     self.status = if loaded {
                         "Created".into()
                     } else {
-                        "Created after the first 100 loaded children".into()
+                        "Created outside the loaded page".into()
                     };
                     Ok(Some(created))
                 }
@@ -3028,7 +3119,7 @@ mod tests {
         app.commit_editor().unwrap();
         assert_eq!(app.engine.node(parent.id).unwrap().unwrap().text, "Renamed");
 
-        app.start_new_child();
+        app.start_new_child().unwrap();
         app.editor.as_mut().unwrap().text = "New child".into();
         app.commit_editor().unwrap();
         let children = app
@@ -3046,7 +3137,7 @@ mod tests {
         app.selected = Some(parent.id);
         assert!(!app.selected_node().unwrap().has_children);
 
-        app.start_new_child();
+        app.start_new_child().unwrap();
         app.editor.as_mut().unwrap().text = "Child".into();
         let child = app.commit_editor().unwrap().unwrap();
 
@@ -3093,7 +3184,7 @@ mod tests {
         let mut app = App::open_with_focus(engine, None).unwrap();
         app.selected = Some(parent.id);
 
-        app.start_new_child();
+        app.start_new_child().unwrap();
         app.editor.as_mut().unwrap().text = "See [[Concept]]".into();
         app.commit_editor().unwrap();
 
@@ -3124,6 +3215,150 @@ mod tests {
             }
         );
         assert_eq!(app.selected, Some(parent.id));
+    }
+
+    #[test]
+    fn vertical_arrows_cross_inline_editor_boundaries() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let first = engine.create_node(CreateNode::new("First")).unwrap();
+        let second = engine.create_node(CreateNode::new("Second")).unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.selected = Some(first.id);
+        app.start_edit();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(matches!(
+            app.editor.as_ref().unwrap().target,
+            EditTarget::Existing(id) if id == second.id
+        ));
+        assert_eq!(app.editor.as_ref().unwrap().cursor, 0);
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(matches!(
+            app.editor.as_ref().unwrap().target,
+            EditTarget::Existing(id) if id == first.id
+        ));
+        assert_eq!(
+            app.editor.as_ref().unwrap().cursor,
+            first.text.chars().count()
+        );
+    }
+
+    #[test]
+    fn editing_down_loads_the_next_sibling_page() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        for index in 0..101 {
+            engine
+                .create_node(CreateNode::new(format!("Node {index:03}")))
+                .unwrap();
+        }
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        let selected = app.branches[&None].nodes.last().unwrap().id;
+        let after = app.branches[&None].next;
+        let expected = app
+            .engine
+            .children(None, Page { limit: 1, after })
+            .unwrap()
+            .nodes[0]
+            .id;
+        app.selected = Some(selected);
+        app.start_edit();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(matches!(
+            app.editor.as_ref().unwrap().target,
+            EditTarget::Existing(id) if id == expected
+        ));
+        assert_eq!(app.editor.as_ref().unwrap().cursor, 0);
+    }
+
+    #[test]
+    fn relative_creation_after_loaded_pages_keeps_the_editor_visible() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        for index in 0..205 {
+            engine
+                .create_node(CreateNode::new(format!("Node {index:03}")))
+                .unwrap();
+        }
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.load_more(None).unwrap();
+        let reference = app.branches[&None].nodes[150].id;
+        app.selected = Some(reference);
+        app.start_new_sibling();
+        app.editor.as_mut().unwrap().text = "Inserted after page one".into();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .unwrap();
+
+        let created = app.selected.unwrap();
+        assert!(app.is_visible(created));
+        assert!(matches!(
+            app.editor.as_ref().unwrap().target,
+            EditTarget::New {
+                placement: Placement::After(id),
+                ..
+            } if id == created
+        ));
+        assert!(
+            display_lines(&app, 80)
+                .iter()
+                .any(|line| line.cursor.is_some())
+        );
+    }
+
+    #[test]
+    fn repeated_relative_creation_does_not_load_extra_pages() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        for index in 0..205 {
+            engine
+                .create_node(CreateNode::new(format!("Node {index:03}")))
+                .unwrap();
+        }
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        let selected = app.branches[&None]
+            .nodes
+            .iter()
+            .find(|node| node.system.is_none())
+            .unwrap()
+            .id;
+        app.selected = Some(selected);
+        let loaded = app.branches[&None].nodes.len();
+
+        for index in 0..5 {
+            app.start_new_before();
+            app.editor.as_mut().unwrap().text = format!("Inserted {index}");
+            app.commit_editor().unwrap();
+            assert_eq!(app.branches[&None].nodes.len(), loaded);
+        }
+    }
+
+    #[test]
+    fn indenting_beyond_a_loaded_page_never_leaves_an_invisible_editor() {
+        let mut engine = Engine::open(":memory:").unwrap();
+        let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
+        for index in 0..101 {
+            let mut input = CreateNode::new(format!("Child {index:03}"));
+            input.parent_id = Some(parent.id);
+            engine.create_node(input).unwrap();
+        }
+        let sibling = engine.create_node(CreateNode::new("Sibling")).unwrap();
+        let mut app = App::open_with_focus(engine, None).unwrap();
+        app.selected = Some(sibling.id);
+        app.start_edit();
+
+        app.handle_editor_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE))
+            .unwrap();
+
+        assert!(app.editor.is_none());
+        assert_eq!(app.selected, Some(parent.id));
+        assert_eq!(app.status, "Indented outside the loaded page");
+        assert!(!app.is_visible(sibling.id));
     }
 
     #[test]
@@ -3499,7 +3734,7 @@ mod tests {
             .unwrap()
             .id;
         app.selected = Some(journal);
-        app.start_new_child();
+        app.start_new_child().unwrap();
         app.editor.as_mut().unwrap().text = "Draft".into();
 
         assert!(app.commit_editor().is_err());
