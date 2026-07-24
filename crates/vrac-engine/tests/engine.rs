@@ -109,48 +109,12 @@ fn new_databases_have_stable_format_markers_and_wal() {
         .expect("read journal mode");
 
     assert_eq!(application_id, VRAC_APPLICATION_ID);
-    assert_eq!(schema_version, 3);
+    assert_eq!(schema_version, 1);
     assert_eq!(journal_mode, "wal");
 }
 
 #[test]
-fn version_two_workspaces_add_the_root_concept_index_without_losing_data() {
-    let database = TestDatabase::new();
-    let mut engine = Engine::open(database.path()).expect("open database");
-    let node = engine
-        .create_node(CreateNode::new("Preserved"))
-        .expect("create node");
-    drop(engine);
-
-    let connection = Connection::open(database.path()).expect("open raw SQLite database");
-    connection
-        .execute("DROP INDEX nodes_by_root_text", [])
-        .expect("restore version two schema");
-    connection
-        .pragma_update(None, "user_version", 2)
-        .expect("mark version two");
-    drop(connection);
-
-    let engine = Engine::open(database.path()).expect("migrate workspace");
-    assert_eq!(engine.node(node.id).unwrap().unwrap().text, "Preserved");
-    drop(engine);
-    let connection = Connection::open(database.path()).expect("inspect migration");
-    let version: i64 = connection
-        .pragma_query_value(None, "user_version", |row| row.get(0))
-        .expect("read schema version");
-    let index_exists: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name = 'nodes_by_root_text')",
-            [],
-            |row| row.get(0),
-        )
-        .expect("read root concept index");
-    assert_eq!(version, 3);
-    assert!(index_exists);
-}
-
-#[test]
-fn valid_unmarked_current_databases_are_adopted() {
+fn unmarked_nonempty_databases_are_rejected_without_modification() {
     let database = TestDatabase::new();
     let engine = Engine::open(database.path()).expect("open database");
     drop(engine);
@@ -161,13 +125,15 @@ fn valid_unmarked_current_databases_are_adopted() {
         .expect("remove application ID");
     drop(connection);
 
-    let engine = Engine::open(database.path()).expect("adopt unmarked database");
-    drop(engine);
+    assert!(matches!(
+        Engine::open(database.path()),
+        Err(Error::InvalidDatabase(reason)) if reason.contains("application ID")
+    ));
     let connection = Connection::open(database.path()).expect("reopen raw SQLite database");
     let application_id: i64 = connection
         .pragma_query_value(None, "application_id", |row| row.get(0))
         .expect("read application ID");
-    assert_eq!(application_id, VRAC_APPLICATION_ID);
+    assert_eq!(application_id, 0);
 }
 
 #[test]
@@ -194,7 +160,7 @@ fn foreign_application_ids_are_rejected_without_modification() {
 }
 
 #[test]
-fn schema_mismatches_are_rejected_before_adopting_an_unmarked_database() {
+fn schema_mismatches_are_rejected_without_modification() {
     let database = TestDatabase::new();
     let engine = Engine::open(database.path()).expect("open database");
     drop(engine);
@@ -203,8 +169,7 @@ fn schema_mismatches_are_rejected_before_adopting_an_unmarked_database() {
     connection
         .execute_batch(
             "DROP INDEX nodes_by_parent;
-             CREATE INDEX nodes_by_parent ON nodes(parent_id, id);
-             PRAGMA application_id = 0;",
+             CREATE INDEX nodes_by_parent ON nodes(parent_id, id);",
         )
         .expect("alter schema");
     drop(connection);
@@ -217,7 +182,7 @@ fn schema_mismatches_are_rejected_before_adopting_an_unmarked_database() {
     let application_id: i64 = connection
         .pragma_query_value(None, "application_id", |row| row.get(0))
         .expect("read application ID");
-    assert_eq!(application_id, 0);
+    assert_eq!(application_id, VRAC_APPLICATION_ID);
 }
 
 #[test]
@@ -812,6 +777,8 @@ fn node_ids_have_a_stable_text_representation() {
 #[test]
 fn unknown_schema_versions_are_not_modified() {
     let database = TestDatabase::new();
+    let engine = Engine::open(database.path()).expect("open database");
+    drop(engine);
     let connection = Connection::open(database.path()).expect("open raw SQLite database");
     connection
         .pragma_update(None, "user_version", 99)
@@ -830,5 +797,5 @@ fn unknown_schema_versions_are_not_modified() {
         .pragma_query_value(None, "application_id", |row| row.get(0))
         .expect("read application ID");
     assert_eq!(version, 99);
-    assert_eq!(application_id, 0);
+    assert_eq!(application_id, VRAC_APPLICATION_ID);
 }

@@ -1,7 +1,7 @@
 # Vrac workspace format
 
-This document defines the current pre-production workspace format. Version 2
-is upgraded in place by adding the derived root-label lookup index.
+This document defines the first published Vrac workspace format. Version 1 is
+the complete current schema; no development migration is shipped with it.
 
 ## File identity
 
@@ -9,14 +9,14 @@ A workspace is an ordinary SQLite database with:
 
 ```sql
 PRAGMA application_id = 0x56524143; -- `VRAC`
-PRAGMA user_version = 3;
+PRAGMA user_version = 1;
 ```
 
 [`crates/vrac-engine/schema.sql`](crates/vrac-engine/schema.sql) is the
 executable schema.
-The engine validates the complete application schema and the single workspace
-identity before accepting a file. A valid unmarked database is marked only
-after that validation succeeds.
+The engine accepts an empty file for initialization or a workspace whose
+application ID, version, complete schema, and single workspace identity all
+match this format. It never adopts or modifies an unmarked non-empty database.
 
 ## Product data
 
@@ -166,13 +166,9 @@ canonical tags, reference ranges, synchronization frontiers, queued
 changesets, and prepared packages. Normal reads are bounded and never traverse
 the complete tree.
 
-## Pre-production evolution
+## Format evolution
 
-Until a workspace format ships to users, a schema change replaces this format,
-resets development data and updates this document, the executable schema, and
-the single current fixture together. Historical development fixtures and
-migrations are not retained.
-
-Once a format is released, it becomes immutable. Every later schema change
-will increment `user_version`, preserve a fixture for the released version,
-and provide an explicit tested migration.
+Version 1 is immutable once published. Every later schema change increments
+`user_version`, preserves a fixture for each released source version, and
+provides an explicit tested migration from the previous format. Development
+formats that preceded V1 are neither recognized nor retained.

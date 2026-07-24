@@ -3,15 +3,9 @@ use rusqlite::Connection;
 use crate::{Error, Result};
 
 pub(crate) const APPLICATION_ID: i64 = 0x5652_4143;
-pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub(crate) const CURRENT_SCHEMA_VERSION: i64 = 1;
 
 const SCHEMA_SQL: &str = include_str!("../schema.sql");
-const ROOT_TEXT_INDEX_SQL: &str =
-    "CREATE INDEX nodes_by_root_text ON nodes(text, position, id) WHERE parent_id IS NULL";
-const ROOT_TEXT_INDEX_SCHEMA: &str = "CREATE INDEX nodes_by_root_text
-    ON nodes(text, position, id) WHERE parent_id IS NULL;
-
-";
 
 #[derive(Clone, Copy)]
 struct SchemaObject {
@@ -114,142 +108,32 @@ const SCHEMA_OBJECTS: &[SchemaObject] = &[
     },
 ];
 
-const SCHEMA_OBJECTS_V2: &[SchemaObject] = &[
-    SchemaObject {
-        kind: "table",
-        name: "node_references",
-        table: "node_references",
-        statement_index: 4,
-    },
-    SchemaObject {
-        kind: "index",
-        name: "node_references_by_target",
-        table: "node_references",
-        statement_index: 5,
-    },
-    SchemaObject {
-        kind: "table",
-        name: "node_search",
-        table: "node_search",
-        statement_index: 10,
-    },
-    SchemaObject {
-        kind: "trigger",
-        name: "node_search_delete",
-        table: "nodes",
-        statement_index: 12,
-    },
-    SchemaObject {
-        kind: "trigger",
-        name: "node_search_insert",
-        table: "nodes",
-        statement_index: 11,
-    },
-    SchemaObject {
-        kind: "trigger",
-        name: "node_search_update",
-        table: "nodes",
-        statement_index: 13,
-    },
-    SchemaObject {
-        kind: "table",
-        name: "node_tags",
-        table: "node_tags",
-        statement_index: 2,
-    },
-    SchemaObject {
-        kind: "index",
-        name: "node_tags_by_tag",
-        table: "node_tags",
-        statement_index: 3,
-    },
-    SchemaObject {
-        kind: "table",
-        name: "nodes",
-        table: "nodes",
-        statement_index: 0,
-    },
-    SchemaObject {
-        kind: "index",
-        name: "nodes_by_parent",
-        table: "nodes",
-        statement_index: 1,
-    },
-    SchemaObject {
-        kind: "table",
-        name: "sync_batch",
-        table: "sync_batch",
-        statement_index: 9,
-    },
-    SchemaObject {
-        kind: "table",
-        name: "sync_devices",
-        table: "sync_devices",
-        statement_index: 7,
-    },
-    SchemaObject {
-        kind: "table",
-        name: "sync_outbox",
-        table: "sync_outbox",
-        statement_index: 8,
-    },
-    SchemaObject {
-        kind: "table",
-        name: "workspace",
-        table: "workspace",
-        statement_index: 6,
-    },
-];
-
 pub(crate) fn prepare_database(connection: &mut Connection) -> Result<()> {
     let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let application_id: i64 =
         connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
 
-    if application_id != 0 && application_id != APPLICATION_ID {
+    if version == 0 && application_id == 0 && database_is_empty(connection)? {
+        return create_database(connection);
+    }
+
+    if application_id != APPLICATION_ID {
         return Err(Error::InvalidDatabase(format!(
             "application ID 0x{application_id:08x} does not identify a Vrac database"
         )));
     }
 
-    match version {
-        0 if application_id == 0 && database_is_empty(connection)? => create_database(connection),
-        0 => Err(Error::InvalidDatabase(
-            "the database has no schema version but is not an empty, unmarked file".into(),
-        )),
-        2 => migrate_v2(connection, application_id),
-        CURRENT_SCHEMA_VERSION => {
-            validate_schema(
-                connection,
-                CURRENT_SCHEMA_VERSION,
-                SCHEMA_SQL,
-                SCHEMA_OBJECTS,
-            )?;
-            validate_workspace_identity(connection)?;
-            mark_database(connection, application_id)
-        }
-        version => Err(Error::UnsupportedSchemaVersion(version)),
+    if version != CURRENT_SCHEMA_VERSION {
+        return Err(Error::UnsupportedSchemaVersion(version));
     }
-}
 
-fn migrate_v2(connection: &mut Connection, application_id: i64) -> Result<()> {
-    let legacy_schema = SCHEMA_SQL.replace(ROOT_TEXT_INDEX_SCHEMA, "");
-    validate_schema(connection, 2, &legacy_schema, SCHEMA_OBJECTS_V2)?;
-    validate_workspace_identity(connection)?;
-    let transaction = connection.transaction()?;
-    transaction.execute(ROOT_TEXT_INDEX_SQL, [])?;
-    transaction.pragma_update(None, "user_version", CURRENT_SCHEMA_VERSION)?;
-    if application_id == 0 {
-        transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-    }
     validate_schema(
-        &transaction,
+        connection,
         CURRENT_SCHEMA_VERSION,
         SCHEMA_SQL,
         SCHEMA_OBJECTS,
     )?;
-    transaction.commit()?;
-    Ok(())
+    validate_workspace_identity(connection)
 }
 
 fn create_database(connection: &mut Connection) -> Result<()> {
@@ -285,16 +169,6 @@ fn validate_workspace_identity(connection: &Connection) -> Result<()> {
             "the workspace identity is missing or invalid".into(),
         ));
     }
-    Ok(())
-}
-
-fn mark_database(connection: &mut Connection, application_id: i64) -> Result<()> {
-    if application_id == APPLICATION_ID {
-        return Ok(());
-    }
-    let transaction = connection.transaction()?;
-    transaction.pragma_update(None, "application_id", APPLICATION_ID)?;
-    transaction.commit()?;
     Ok(())
 }
 

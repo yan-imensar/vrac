@@ -4,8 +4,8 @@ Vrac is a local-first terminal outliner built for fast capture and mental
 offloading. Write first, structure naturally, and retrieve notes later through
 their context, tags, references, and backlinks.
 
-The project is pre-1.0 and already used for daily note-taking. Its workspace
-format may still evolve before the first stable release.
+The project is approaching its first public release and is already used for
+daily note-taking. The documented workspace format starts cleanly at V1.
 
 ## Why Vrac
 
