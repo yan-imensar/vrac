@@ -29,6 +29,23 @@ fn unified_help_keeps_the_tui_and_scriptable_commands_visible() {
 }
 
 #[test]
+fn version_matches_the_workspace_package() {
+    let version = vrac(&["--version"]);
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&version.stdout),
+        format!("vrac {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(version.stderr.is_empty());
+
+    let extra_argument = vrac(&["--version", "unexpected"]);
+    assert_eq!(extra_argument.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&extra_argument.stderr).contains("version accepts no arguments")
+    );
+}
+
+#[test]
 fn the_cli_initializes_edits_moves_and_checks_a_workspace() {
     let directory = tempfile::tempdir().expect("create temporary directory");
     let database = directory.path().join("cli.vrac");

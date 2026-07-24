@@ -12,6 +12,7 @@ Vrac, a local-first outliner
 
 Usage:
   vrac
+  vrac --version
   vrac tui [workspace-folder]
   vrac workspace
   vrac init <file>
@@ -84,6 +85,13 @@ fn run(arguments: &[String]) -> Result<ExitCode, CliError> {
     let command = &arguments[0];
     let arguments = &arguments[1..];
     match command.as_str() {
+        "version" | "--version" | "-V" => {
+            if !arguments.is_empty() {
+                return Err(CliError::Usage("version accepts no arguments".into()));
+            }
+            println!("vrac {}", env!("CARGO_PKG_VERSION"));
+            Ok(ExitCode::SUCCESS)
+        }
         "help" | "--help" | "-h" => {
             print!("{USAGE}");
             Ok(ExitCode::SUCCESS)

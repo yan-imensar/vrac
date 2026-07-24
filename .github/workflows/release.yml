@@ -108,12 +108,19 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out the repository
+        uses: actions/checkout@v6
+
       - name: Download release files
         uses: actions/download-artifact@v8
         with:
           path: dist
           pattern: release-*
           merge-multiple: true
+
+      - name: Add the curl installer
+        shell: bash
+        run: cp install.sh dist/vrac-installer.sh
 
       - name: Create GitHub release
         env:

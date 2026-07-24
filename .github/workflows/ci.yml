@@ -37,3 +37,7 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace --locked
+
+      - name: Test the curl installer
+        if: runner.os != 'Windows'
+        run: sh tests/install.sh

@@ -32,7 +32,19 @@ Just one fast terminal outliner, an ordinary SQLite database, and your thoughts.
 
 ## Install
 
-Download the archive for your platform from the
+On macOS or x86_64 Linux, install the latest release without Rust or `sudo`:
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/yan-imensar/vrac/releases/latest/download/vrac-installer.sh | sh
+```
+
+The installer verifies the release SHA-256 checksum and writes `vrac` to
+`~/.local/bin`. Set `VRAC_INSTALL_DIR` to choose another directory, or
+`VRAC_VERSION=v0.1.0` to install a specific release. It never edits shell
+configuration; if necessary, it prints the directory to add to `PATH`.
+
+For a manual installation, download the archive for your platform from the
 [latest GitHub release](https://github.com/yan-imensar/vrac/releases/latest):
 
 | Platform | Archive |
