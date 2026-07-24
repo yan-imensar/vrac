@@ -75,7 +75,8 @@ jobs:
         run: |
           mkdir -p dist/package
           cp "target/$TARGET/release/vrac" dist/package/vrac
-          tar -C dist/package -czf "dist/$ASSET" vrac
+          cp LICENSE dist/package/LICENSE
+          tar -C dist/package -czf "dist/$ASSET" vrac LICENSE
           shasum -a 256 "dist/$ASSET" | sed 's#  dist/#  #' > "dist/$ASSET.sha256"
 
       - name: Package Vrac
@@ -87,7 +88,8 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist/package | Out-Null
           Copy-Item "target/$env:TARGET/release/vrac.exe" dist/package/vrac.exe
-          Compress-Archive -Path dist/package/vrac.exe -DestinationPath "dist/$env:ASSET"
+          Copy-Item LICENSE dist/package/LICENSE
+          Compress-Archive -Path dist/package/vrac.exe, dist/package/LICENSE -DestinationPath "dist/$env:ASSET"
           $hash = (Get-FileHash "dist/$env:ASSET" -Algorithm SHA256).Hash.ToLower()
           "$hash  $env:ASSET" | Set-Content -NoNewline "dist/$env:ASSET.sha256"
 
