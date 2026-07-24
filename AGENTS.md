@@ -174,3 +174,26 @@ the user by default.
 
 A change is complete when the requested behavior exists, invariants are
 preserved, relevant tests pass, and affected documentation is consistent.
+
+## GitHub workflow
+
+- Never develop on or push directly to `main`. Start each change from an
+  up-to-date `main` on a short-lived `feature/`, `fix/`, `docs/`, or `chore/`
+  branch.
+- Keep one coherent change in each pull request. Write its title in imperative
+  English as a useful release-note sentence, and record the reason and
+  verification in the body.
+- Apply exactly one release-note label before merge: `breaking-change`,
+  `enhancement`, `bug`, `documentation`, `dependencies`, `maintenance`, or
+  `skip-changelog`. Use `skip-changelog` only for internal work that users do
+  not need to see.
+- Open the pull request only after the proportional local checks pass. Merge
+  only when every required GitHub check passes and every conversation is
+  resolved.
+- Squash-merge pull requests and delete their branches. The pull request title
+  becomes the durable commit and generated release-note entry on `main`.
+- Do not replace a pull request with a series of direct commits. Emergency
+  branch-protection changes require an explicit request from the repository
+  owner and must be restored immediately afterward.
+- Release through an immutable `vX.Y.Z` tag whose version exactly matches the
+  Cargo workspace version. Never move or replace a published version tag.

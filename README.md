@@ -173,8 +173,9 @@ crates/vrac-tui      terminal interaction and rendering
 The engine is synchronous and independent from every interface. The CLI and
 TUI contain no SQL or duplicated business rules.
 
-The current workspace format is documented in [FORMAT.md](FORMAT.md), and
-contribution rules are in [AGENTS.md](AGENTS.md).
+The current workspace format is documented in [FORMAT.md](FORMAT.md). See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the branch, pull-request, and release
+workflow.
 
 ## Development
 
