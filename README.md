@@ -32,10 +32,34 @@ Just one fast terminal outliner, an ordinary SQLite database, and your thoughts.
 
 ## Install
 
-Vrac currently requires Rust 1.95 or newer. From a source checkout:
+Download the archive for your platform from the
+[latest GitHub release](https://github.com/yan-imensar/vrac/releases/latest):
+
+| Platform | Archive |
+| --- | --- |
+| macOS Apple Silicon | `aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `x86_64-unknown-linux-musl.tar.gz` |
+| Windows x86_64 | `x86_64-pc-windows-msvc.zip` |
+
+Each archive has a matching SHA-256 checksum. Extract it, place `vrac` (or
+`vrac.exe`) somewhere on your `PATH`, and run:
 
 ```sh
-cargo install --path crates/vrac
+vrac
+```
+
+Developers with Rust 1.95 or newer can install the current main branch
+directly:
+
+```sh
+cargo install --locked --git https://github.com/yan-imensar/vrac vrac
+```
+
+From a source checkout:
+
+```sh
+cargo install --locked --path crates/vrac
 vrac
 ```
 
