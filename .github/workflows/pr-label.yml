@@ -1,0 +1,31 @@
+name: PR metadata
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  release-notes:
+    name: Release notes label
+    runs-on: ubuntu-slim
+    timeout-minutes: 2
+    env:
+      LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+    steps:
+      - name: Require exactly one release-note label
+        shell: bash
+        run: |
+          count=0
+          for label in breaking-change enhancement bug documentation dependencies maintenance skip-changelog; do
+            case ",$LABELS," in
+              *",$label,"*) count=$((count + 1)) ;;
+            esac
+          done
+
+          if [ "$count" -ne 1 ]; then
+            echo "Apply exactly one release-note label. Found: $LABELS"
+            exit 1
+          fi
