@@ -190,8 +190,10 @@ preserved, relevant tests pass, and affected documentation is consistent.
 - Open the pull request only after the proportional local checks pass. Merge
   only when every required GitHub check passes and every conversation is
   resolved.
-- Squash-merge pull requests and delete their branches. The pull request title
-  becomes the durable commit and generated release-note entry on `main`.
+- Keep exactly one validated commit in each pull request and make its subject
+  match the pull request title. Rebase-merge the pull request and delete its
+  branch. The same title becomes the durable commit and generated release-note
+  entry on `main`.
 - Do not replace a pull request with a series of direct commits. Emergency
   branch-protection changes require an explicit request from the repository
   owner and must be restored immediately afterward.
