@@ -110,9 +110,9 @@ The stable filename is
 `<device>-<first:020>-<last:020>.vrac-sync`. Packages are immutable and opaque
 to provider clients.
 
-## Desktop workspace folder
+## Synchronized workspace folder
 
-The desktop client maps one user-selected folder to one workspace through this
+The terminal client maps one user-selected folder to one workspace through this
 published layout:
 
 ```text
@@ -154,7 +154,7 @@ but no pending outbox or prepared batch from the source installation. The
 engine validates schema and integrity before publishing it and never copies an
 open database or its WAL directly.
 
-The desktop client creates `checkpoint.vrac` with the workspace and refreshes
+The terminal client creates `checkpoint.vrac` with the workspace and refreshes
 it before deleting an available local working copy. Immutable changes are not
 pruned in the current format, so replacing a checkpoint cannot lose a concurrent
 device's data. Periodic distributed compaction is intentionally deferred.

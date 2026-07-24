@@ -25,7 +25,7 @@ A speed optimization must never silently weaken durability or integrity.
 - `vrac` is the public product package. Its binary opens the TUI or parses
   scriptable commands, calls the engine, presents results, and selects exit
   codes.
-- The CLI, Tauri, and future interfaces contain no SQL or business rules.
+- The CLI, TUI, and future interfaces contain no SQL or business rules.
 - The engine depends on no user interface, graphical framework, or network
   service.
 - The engine remains synchronous until measurements and a concrete need
@@ -103,18 +103,14 @@ content, replacing tags, moving a node, and reading a representative deep path.
 Full integrity checks, exports, bulk generation, and complete-tree traversal are
 background operations and are not subject to this interactive budget.
 
-The packaged macOS reference product has separate release gates: the app
-bundle stays below 8 MiB, a fresh-state launch reaches its first usable view in
-under 1.5 seconds, the complete app stays below 96 MiB of physical footprint on
-the initial view and 224 MiB after the 100-create/100-edit/20-reload stress
-scenario, and steady idle CPU remains below 1%. Interactive create, persisted
-edit, and full 100-row reload samples must complete before the next 60 Hz paint
-at p95. Measure physical footprint across the app and its dedicated WebKit
-helpers; summed RSS double-counts shared memory.
+The terminal product has separate release gates: a fresh-state launch reaches
+its first usable model in under 1.5 seconds, interactive work including frame
+serialization completes within 16.667 ms at p95, and total peak RSS stays below
+64 MiB in the reference scenario.
 
 This is a regression gate for the reference machine, not an assumption that
 all storage hardware behaves identically. Before release, measure representative
-Apple, Android, Windows, and Linux devices and record their own baselines
+macOS, Linux, and Windows systems and record their own baselines
 without weakening the reference-machine gate.
 
 - Keep frequent accesses indexed by parent, position, and identifier.
@@ -124,8 +120,8 @@ without weakening the reference-machine gate.
   representative tree shape.
 - After every engine or schema change that can affect interactive work, run the
   five-million-node release scenario and verify every reported interactive p95.
-- After frontend or Tauri changes that can affect rendering, startup, IPC, or
-  retained state, rerun the packaged product scenario on the reference Mac.
+- After TUI changes that can affect rendering, startup, or retained state,
+  rerun the terminal product scenario on the reference machine.
 - The performance dataset must exercise plain nodes, metadata-rich pages,
   multiple tags, resolved references, target renames, content and tag edits,
   sibling moves, and paths at several depths.
@@ -134,10 +130,6 @@ without weakening the reference-machine gate.
   and maintenance cost.
 - Do not claim a performance property without a benchmark or query-plan
   analysis that demonstrates it.
-
-Desktop WebKit measurements are not mobile claims. Record separate packaged
-baselines on representative iOS, Android, Windows, and Linux devices before
-release.
 
 A test with little data validates correctness, not scalability.
 
