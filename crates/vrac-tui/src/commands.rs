@@ -21,6 +21,8 @@ pub(super) enum Command {
     Redo,
     Tag,
     Backlinks,
+    LinesOn,
+    LinesOff,
     Sync,
     Workspace,
     Quit,
@@ -128,6 +130,16 @@ pub(super) const COMMANDS: &[CommandEntry] = &[
         command: Command::Backlinks,
         name: "backlinks",
         hint: "show references to the selected bullet",
+    },
+    CommandEntry {
+        command: Command::LinesOn,
+        name: "lines on",
+        hint: "show hierarchy lines",
+    },
+    CommandEntry {
+        command: Command::LinesOff,
+        name: "lines off",
+        hint: "hide hierarchy lines",
     },
     CommandEntry {
         command: Command::Sync,

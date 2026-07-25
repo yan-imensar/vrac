@@ -676,14 +676,14 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
         if let Some((draft_index, depth, editor)) = &draft
             && *draft_index == index
         {
-            lines.extend(editor_lines(editor, *depth, width));
+            lines.extend(editor_lines(editor, *depth, width, app.lines));
         }
         let Some(item) = visible.get(index) else {
             continue;
         };
         let selected = !draft_active && app.selected == Some(item.node.id);
         let selector = if selected { "› " } else { "  " };
-        let indent = guide_prefix(item.depth);
+        let indent = guide_prefix(item.depth, app.lines);
         let marker = if item.node.has_children {
             if app.expanded.contains(&item.node.id) {
                 "▾"
@@ -823,8 +823,8 @@ fn draft_position(
     }
 }
 
-fn editor_lines(editor: &Editor, depth: usize, width: usize) -> Vec<DisplayLine> {
-    let indent = guide_prefix(depth);
+fn editor_lines(editor: &Editor, depth: usize, width: usize, lines: bool) -> Vec<DisplayLine> {
+    let indent = guide_prefix(depth, lines);
     let prefix = format!("› {indent}• ");
     let continuation = format!("  {indent}  ");
     let available = width
@@ -845,10 +845,10 @@ fn editor_lines(editor: &Editor, depth: usize, width: usize) -> Vec<DisplayLine>
         .collect()
 }
 
-fn guide_prefix(depth: usize) -> String {
+fn guide_prefix(depth: usize, lines: bool) -> String {
     let mut prefix = String::with_capacity(depth.saturating_mul(OUTLINE_INDENT));
     for _ in 0..depth {
-        prefix.push('│');
+        prefix.push(if lines { '│' } else { ' ' });
         prefix.extend(std::iter::repeat_n(' ', OUTLINE_INDENT - 1));
     }
     prefix

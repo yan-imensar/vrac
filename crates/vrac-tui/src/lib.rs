@@ -23,6 +23,7 @@ use vrac::{
 };
 
 mod commands;
+mod config;
 mod editor;
 mod performance;
 mod prompts;
@@ -43,6 +44,7 @@ use ui::{display_lines, draw_inline_content, split_content, wrap_text};
 use workspace::{OpenedWorkspace, Workspace, configured_folder, remember_folder};
 
 use commands::{COMMANDS, Command};
+use config::Config;
 use editor::{EditTarget, Editor, char_to_byte};
 use prompts::{
     BacklinkView, Launcher, LauncherItem, LauncherKind, ReferencePrompt, TagPrompt, TagTarget,
@@ -96,6 +98,7 @@ pub fn run_with_workspace_picker() -> Result<(), Box<dyn Error>> {
 }
 
 fn run_with_folder(data_directory: &Path, folder: &mut PathBuf) -> Result<(), Box<dyn Error>> {
+    let mut config = Config::load()?;
     loop {
         let opened = open_workspace(data_directory, folder, |status| {
             if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -104,7 +107,7 @@ fn run_with_folder(data_directory: &Path, folder: &mut PathBuf) -> Result<(), Bo
             pick_workspace_folder_with_status(status.into())
         })?;
         remember_folder(data_directory, opened.workspace.folder())?;
-        match run_workspace(opened)? {
+        match run_workspace(opened, &mut config)? {
             SessionExit::Quit => return Ok(()),
             SessionExit::ChooseWorkspace => {
                 if let Some(selected) = pick_workspace_folder()? {
@@ -135,10 +138,13 @@ fn open_workspace(
     }
 }
 
-fn run_workspace(opened: OpenedWorkspace) -> Result<SessionExit, Box<dyn Error>> {
+fn run_workspace(
+    opened: OpenedWorkspace,
+    config: &mut Config,
+) -> Result<SessionExit, Box<dyn Error>> {
     let initial_sync = opened.initial_sync;
     let workspace = opened.workspace;
-    let mut app = App::open(opened.engine)?;
+    let mut app = App::open_with_lines(opened.engine, config.lines)?;
     if initial_sync.imported > 0 || initial_sync.published > 0 {
         app.status = format!(
             "Synced: {} received, {} sent",
@@ -165,6 +171,16 @@ fn run_workspace(opened: OpenedWorkspace) -> Result<SessionExit, Box<dyn Error>>
                     Ok(Action::ChooseWorkspace) => match workspace.sync(&mut app.engine) {
                         Ok(_) => return Ok(SessionExit::ChooseWorkspace),
                         Err(error) => app.status = format!("Sync error: {error}"),
+                    },
+                    Ok(Action::SetLines(enabled)) => match config.set_lines(enabled) {
+                        Ok(()) => {
+                            app.lines = enabled;
+                            app.status = format!(
+                                "Hierarchy lines {}",
+                                if enabled { "enabled" } else { "disabled" }
+                            );
+                        }
+                        Err(error) => app.status = format!("Config error: {error}"),
                     },
                     Ok(Action::Continue) => {}
                     Err(error) => app.status = error.to_string(),
@@ -328,6 +344,7 @@ enum Action {
     Continue,
     Sync,
     ChooseWorkspace,
+    SetLines(bool),
     Quit,
 }
 
@@ -352,18 +369,27 @@ struct App {
     help: bool,
     pending_key: Option<char>,
     status: String,
+    lines: bool,
     scroll: usize,
     viewport_width: usize,
 }
 
 impl App {
-    fn open(mut engine: Engine) -> vrac::Result<Self> {
+    fn open_with_lines(mut engine: Engine, lines: bool) -> vrac::Result<Self> {
         let today = jiff::Zoned::now().date().to_string();
         let day = engine.journal_day(&today)?;
-        Self::open_with_focus(engine, Some(day.id))
+        Self::open_with_focus_and_lines(engine, Some(day.id), lines)
     }
 
     fn open_with_focus(engine: Engine, focus: Option<NodeId>) -> vrac::Result<Self> {
+        Self::open_with_focus_and_lines(engine, focus, true)
+    }
+
+    fn open_with_focus_and_lines(
+        engine: Engine,
+        focus: Option<NodeId>,
+        lines: bool,
+    ) -> vrac::Result<Self> {
         let mut app = Self {
             engine,
             branches: HashMap::new(),
@@ -379,6 +405,7 @@ impl App {
             help: false,
             pending_key: None,
             status: String::new(),
+            lines,
             scroll: 0,
             viewport_width: 80,
         };
@@ -1284,6 +1311,8 @@ impl App {
             Command::Redo => self.redo()?,
             Command::Tag => self.start_tag_prompt()?,
             Command::Backlinks => self.start_backlinks()?,
+            Command::LinesOn => return Ok(Action::SetLines(true)),
+            Command::LinesOff => return Ok(Action::SetLines(false)),
             Command::Sync => return Ok(Action::Sync),
             Command::Workspace => return Ok(Action::ChooseWorkspace),
             Command::Quit => return Ok(Action::Quit),
@@ -2304,7 +2333,7 @@ mod tests {
 
     #[test]
     fn normal_startup_focuses_today() {
-        let app = App::open(Engine::open(":memory:").unwrap()).unwrap();
+        let app = App::open_with_lines(Engine::open(":memory:").unwrap(), true).unwrap();
         let today = jiff::Zoned::now().date().to_string();
         assert!(matches!(
             app.focus_path.last().and_then(|node| node.system.as_ref()),
@@ -3002,6 +3031,20 @@ mod tests {
     }
 
     #[test]
+    fn lines_commands_request_persistent_presentation_changes() {
+        let (mut app, _, _) = test_app();
+
+        assert_eq!(
+            app.run_command(Command::LinesOff).unwrap(),
+            Action::SetLines(false)
+        );
+        assert_eq!(
+            app.run_command(Command::LinesOn).unwrap(),
+            Action::SetLines(true)
+        );
+    }
+
+    #[test]
     fn tab_and_backtab_move_a_node_without_leaving_inline_editing() {
         let (mut app, parent, _) = test_app();
         let sibling = app.engine.create_node(CreateNode::new("Sibling")).unwrap();
@@ -3368,5 +3411,21 @@ mod tests {
             .find(|line| line.text.contains(&child.text))
             .unwrap();
         assert!(child_line.text.starts_with("  │   • "));
+    }
+
+    #[test]
+    fn disabling_lines_preserves_indentation_without_guides() {
+        let (mut app, parent, child) = test_app();
+        app.expand(parent.id).unwrap();
+        app.lines = false;
+
+        let lines = display_lines(&app, 80);
+        let child_line = lines
+            .iter()
+            .find(|line| line.text.contains(&child.text))
+            .unwrap();
+
+        assert!(child_line.text.starts_with("      • "));
+        assert!(!child_line.text.contains('│'));
     }
 }

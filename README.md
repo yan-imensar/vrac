@@ -153,6 +153,17 @@ folder.
 
 Synchronization runs at startup and after idle periods outside inline editing.
 Use `:sync` for an immediate round and `:workspace` to choose another folder.
+
+Terminal presentation preferences live in
+`$XDG_CONFIG_HOME/vrac/config.toml`, or `~/.config/vrac/config.toml` when
+`XDG_CONFIG_HOME` is unset. Windows uses `%APPDATA%\vrac\config.toml`.
+Vrac creates this file only after a setting changes. `:lines on` and
+`:lines off` show or hide hierarchy guides immediately and remember the choice:
+
+```toml
+lines = true
+```
+
 Independent changes merge; real conflicts stop atomically instead of silently
 using last-writer-wins.
 
