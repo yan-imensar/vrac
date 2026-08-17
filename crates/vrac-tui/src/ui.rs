@@ -7,9 +7,11 @@ use crossterm::terminal::{self, BeginSynchronizedUpdate, Clear, ClearType, EndSy
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vrac_engine::{NodeId, Placement};
 
-use super::{
-    App, BacklinkView, EditTarget, Editor, Launcher, LauncherItem, LauncherKind, OUTLINE_INDENT,
-    ReferencePrompt, TagPrompt, VisibleNode,
+use super::OUTLINE_INDENT;
+use super::editor::{EditTarget, Editor};
+use super::model::{App, VisibleNode};
+use super::prompts::{
+    BacklinkView, Launcher, LauncherItem, LauncherKind, ReferencePrompt, TagPrompt,
 };
 
 const CONTENT_LEFT: usize = 2;

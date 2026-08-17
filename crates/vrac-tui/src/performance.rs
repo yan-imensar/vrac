@@ -5,8 +5,9 @@ use std::time::{Duration, Instant};
 
 use vrac_engine::Engine;
 
+use super::model::App;
+use super::prompts::LauncherKind;
 use super::ui::{content_width, draw_display_line, frame_lines, outline_height};
-use super::{App, LauncherKind};
 
 const SAMPLE_COUNT: usize = 100;
 const RELOAD_COUNT: usize = 20;
