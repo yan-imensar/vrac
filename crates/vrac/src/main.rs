@@ -3,68 +3,76 @@ use std::fmt;
 use std::process::ExitCode;
 
 use vrac_engine::{
-    CheckIssue, CreateNode, Destination, Engine, GenerateShape, MAX_PAGE_SIZE, Node, NodeId, Page,
-    Placement,
+    CheckIssue, CreateNode, Destination, Engine, MAX_PAGE_SIZE, Node, NodeId, Page, Placement,
 };
 
-const USAGE: &str = "\
+const ROOT_USAGE: &str = "\
 Vrac, a local-first outliner
 
 Usage:
   vrac
+  vrac --workspace <provider-folder>
+  vrac workspace select
+  vrac db <command> [arguments]
+  vrac --help
   vrac --version
-  vrac tui [workspace-folder]
-  vrac workspace
-  vrac init <file>
-  vrac add <file> [--parent <id>] [--first|--last|--before <id>|--after <id>] <text>
-  vrac node <file> <id>
-  vrac children <file> [--parent <id>] [--limit <n>|--all]
-  vrac set-text <file> <id> <text>
-  vrac move <file> <id> [--parent <id>] [--first|--last|--before <id>|--after <id>]
-  vrac check <file>
-  vrac generate <file> --nodes <n> [--shape wide|deep|mixed]
+
+Run `vrac db --help` for the direct database commands.
 ";
+
+const DB_USAGE: &str = "\
+Direct database commands
+
+Usage:
+  vrac db init <file>
+  vrac db add <file> [--parent <id>] [--first|--last|--before <id>|--after <id>] <text>
+  vrac db node <file> <id>
+  vrac db children <file> [--parent <id>] [--limit <n>|--all]
+  vrac db set-text <file> <id> <text>
+  vrac db move <file> <id> [--parent <id>] [--first|--last|--before <id>|--after <id>]
+  vrac db check <file>
+";
+
+const WORKSPACE_USAGE: &str = "Usage: vrac workspace select\n";
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments.is_empty() {
         return tui_exit(launch_tui(vrac_tui::WorkspaceSelection::Remembered));
     }
-    if arguments[0] == "tui" {
-        if arguments
-            .get(1)
-            .is_some_and(|argument| matches!(argument.as_str(), "--help" | "-h"))
-        {
-            if arguments.len() != 2 {
-                eprintln!("error: tui accepts at most one workspace folder\n\n{USAGE}");
-                return ExitCode::from(2);
+
+    match arguments[0].as_str() {
+        "--help" | "-h" => {
+            if arguments.len() != 1 {
+                return usage_exit("--help accepts no arguments");
             }
-            println!("Usage: vrac tui [workspace-folder]");
+            print!("{ROOT_USAGE}");
             return ExitCode::SUCCESS;
         }
-        if arguments.len() > 2 {
-            eprintln!("error: tui accepts at most one workspace folder\n\n{USAGE}");
-            return ExitCode::from(2);
+        "--version" | "-V" => {
+            if arguments.len() != 1 {
+                return usage_exit("--version accepts no arguments");
+            }
+            println!("vrac {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
         }
-        let workspace = arguments
-            .get(1)
-            .map_or(vrac_tui::WorkspaceSelection::Remembered, |folder| {
-                vrac_tui::WorkspaceSelection::Folder(folder.into())
-            });
-        return tui_exit(launch_tui(workspace));
-    }
-    if arguments[0] == "workspace" {
-        if arguments.len() != 1 {
-            eprintln!("error: workspace accepts no arguments\n\n{USAGE}");
-            return ExitCode::from(2);
+        "--workspace" => {
+            if arguments.len() != 2 {
+                return usage_exit("--workspace expects exactly one provider folder");
+            }
+            return tui_exit(launch_tui(vrac_tui::WorkspaceSelection::Folder(
+                arguments[1].as_str().into(),
+            )));
         }
-        return tui_exit(launch_tui(vrac_tui::WorkspaceSelection::Select));
+        "workspace" => return workspace_exit(&arguments[1..]),
+        "db" => {}
+        command => return usage_exit(&format!("unknown command: {command}")),
     }
 
-    match run(&arguments) {
+    match run_db(&arguments[1..]) {
         Ok(exit_code) => exit_code,
         Err(CliError::Usage(message)) => {
-            eprintln!("error: {message}\n\n{USAGE}");
+            eprintln!("error: {message}\n\n{DB_USAGE}");
             ExitCode::from(2)
         }
         Err(CliError::Engine(error)) => {
@@ -72,6 +80,28 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn workspace_exit(arguments: &[String]) -> ExitCode {
+    match arguments {
+        [argument] if matches!(argument.as_str(), "--help" | "-h") => {
+            print!("{WORKSPACE_USAGE}");
+            ExitCode::SUCCESS
+        }
+        [command] if command == "select" => {
+            tui_exit(launch_tui(vrac_tui::WorkspaceSelection::Select))
+        }
+        [] => usage_exit("workspace expects the `select` command"),
+        [command, ..] if command != "select" => {
+            usage_exit(&format!("unknown workspace command: {command}"))
+        }
+        _ => usage_exit("workspace select accepts no arguments"),
+    }
+}
+
+fn usage_exit(message: &str) -> ExitCode {
+    eprintln!("error: {message}\n\n{ROOT_USAGE}");
+    ExitCode::from(2)
 }
 
 fn launch_tui(workspace: vrac_tui::WorkspaceSelection) -> Result<(), Box<dyn StdError>> {
@@ -94,19 +124,17 @@ fn tui_exit(result: Result<(), Box<dyn StdError>>) -> ExitCode {
     }
 }
 
-fn run(arguments: &[String]) -> Result<ExitCode, CliError> {
-    let command = &arguments[0];
+fn run_db(arguments: &[String]) -> Result<ExitCode, CliError> {
+    let command = arguments
+        .first()
+        .ok_or_else(|| CliError::Usage("db expects a command".into()))?;
     let arguments = &arguments[1..];
     match command.as_str() {
-        "version" | "--version" | "-V" => {
+        "--help" | "-h" => {
             if !arguments.is_empty() {
-                return Err(CliError::Usage("version accepts no arguments".into()));
+                return Err(CliError::Usage("db --help accepts no arguments".into()));
             }
-            println!("vrac {}", env!("CARGO_PKG_VERSION"));
-            Ok(ExitCode::SUCCESS)
-        }
-        "help" | "--help" | "-h" => {
-            print!("{USAGE}");
+            print!("{DB_USAGE}");
             Ok(ExitCode::SUCCESS)
         }
         "init" => command_init(arguments),
@@ -116,8 +144,9 @@ fn run(arguments: &[String]) -> Result<ExitCode, CliError> {
         "set-text" => command_set_text(arguments),
         "move" => command_move(arguments),
         "check" => command_check(arguments),
-        "generate" => command_generate(arguments),
-        _ => Err(CliError::Usage(format!("unknown command: {command}"))),
+        _ => Err(CliError::Usage(format!(
+            "unknown database command: {command}"
+        ))),
     }
 }
 
@@ -388,56 +417,6 @@ fn command_check(arguments: &[String]) -> Result<ExitCode, CliError> {
         }
     }
     Ok(ExitCode::from(3))
-}
-
-fn command_generate(arguments: &[String]) -> Result<ExitCode, CliError> {
-    if arguments.is_empty() {
-        return Err(CliError::Usage("generate expects a file".into()));
-    }
-
-    let path = &arguments[0];
-    let mut count = None;
-    let mut shape = GenerateShape::Mixed;
-    let mut shape_name = "mixed";
-    let mut index = 1;
-    while index < arguments.len() {
-        match arguments[index].as_str() {
-            "--nodes" => {
-                if count.is_some() {
-                    return Err(CliError::Usage(
-                        "--nodes was provided more than once".into(),
-                    ));
-                }
-                let value = option_value(arguments, &mut index, "--nodes")?;
-                count = Some(
-                    value
-                        .parse()
-                        .map_err(|_| CliError::Usage(format!("invalid count: {value}")))?,
-                );
-            }
-            "--shape" => {
-                let value = option_value(arguments, &mut index, "--shape")?;
-                (shape, shape_name) = match value {
-                    "wide" => (GenerateShape::Wide, "wide"),
-                    "deep" => (GenerateShape::Deep, "deep"),
-                    "mixed" => (GenerateShape::Mixed, "mixed"),
-                    _ => {
-                        return Err(CliError::Usage(format!(
-                            "invalid shape: {value} (expected wide, deep, or mixed)"
-                        )));
-                    }
-                };
-            }
-            option => return Err(CliError::Usage(format!("unknown option: {option}"))),
-        }
-        index += 1;
-    }
-
-    let count = count.ok_or_else(|| CliError::Usage("--nodes is required".into()))?;
-    let mut engine = Engine::open(path)?;
-    engine.generate_nodes(count, shape)?;
-    println!("generated\t{count}\t{shape_name}");
-    Ok(ExitCode::SUCCESS)
 }
 
 fn print_node(node: &Node) {
