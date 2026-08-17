@@ -110,7 +110,9 @@ fn main() -> Result<(), Box<dyn StdError>> {
     println!("root_pages\t{page_count}\tcount");
 
     let started = Instant::now();
-    let created = engine.create_node(CreateNode::new("Performance probe"))?;
+    let created = engine
+        .create_node(CreateNode::new("Performance probe"))?
+        .node;
     print_duration("create_root", started.elapsed());
 
     let mut metadata_nodes = Vec::with_capacity(METADATA_PAGE_SIZE);
@@ -131,12 +133,30 @@ fn main() -> Result<(), Box<dyn StdError>> {
             target_id: created.id,
         }];
         let started = Instant::now();
-        metadata_nodes.push(engine.create_node(input)?);
+        metadata_nodes.push(engine.create_node(input)?.node);
         create_samples.push(started.elapsed());
     }
     record_interactive(
         "create_with_metadata_p95",
         percentile_95(&mut create_samples),
+    )?;
+    let mut materialized_create_samples = Vec::with_capacity(SAMPLE_COUNT);
+    for index in 0..SAMPLE_COUNT {
+        let mut input = CreateNode::new(format!("Materialized creation probe [[concept {index}]]"));
+        input.parent_id = Some(created.id);
+        let started = Instant::now();
+        let outcome = engine.create_node(input)?;
+        materialized_create_samples.push(started.elapsed());
+        if outcome.materialized_nodes.len() != 1 {
+            return Err(IoError::other(
+                "a materialized creation probe did not report its new concept",
+            )
+            .into());
+        }
+    }
+    record_interactive(
+        "create_with_materialized_reference_p95",
+        percentile_95(&mut materialized_create_samples),
     )?;
     let source = metadata_nodes
         .first()
@@ -309,7 +329,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     for index in 0..SAMPLE_COUNT {
         let mut input = CreateNode::new(format!("Deletion probe {index}"));
         input.parent_id = Some(created.id);
-        deletion_nodes.push(engine.create_node(input)?);
+        deletion_nodes.push(engine.create_node(input)?.node);
     }
     let mut delete_samples = Vec::with_capacity(SAMPLE_COUNT);
     for node in deletion_nodes {
@@ -374,7 +394,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
             label_end: label_start + "target".len(),
             target_id: created.id,
         }];
-        leaf_id = engine.create_node(input)?.id;
+        leaf_id = engine.create_node(input)?.node.id;
     }
     let deep_path = engine.path(leaf_id)?;
     if deep_path.len() != DEEP_PATH_LENGTH + 2

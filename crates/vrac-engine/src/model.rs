@@ -106,6 +106,15 @@ impl CreateNode {
     }
 }
 
+/// Result of creating a node and resolving complete unbound references.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreateOutcome {
+    /// The newly created node with its canonical tags and resolved references.
+    pub node: Node,
+    /// New concept or Journal nodes in first-occurrence order.
+    pub materialized_nodes: Vec<Node>,
+}
+
 /// Content captured as one ordinary bullet in a Journal day.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct JournalEntry {

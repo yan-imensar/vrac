@@ -9,7 +9,9 @@
 //! use vrac_engine::{CreateNode, Engine, Page};
 //!
 //! let mut engine = Engine::open(":memory:")?;
-//! let meeting = engine.create_node(CreateNode::new("Meeting about project X"))?;
+//! let meeting = engine
+//!     .create_node(CreateNode::new("Meeting about project X"))?
+//!     .node;
 //! let mut decision = CreateNode::new("Ship the first version on Friday");
 //! decision.parent_id = Some(meeting.id);
 //! engine.create_node(decision)?;
@@ -46,8 +48,8 @@ pub use identity::{
 };
 pub use model::{
     BacklinkContext, BacklinkPage, BacklinkTag, CheckIssue, CheckReport, ContentUpdate, CreateNode,
-    DeleteOutcome, Destination, GenerateShape, JournalEntry, Node, NodePage, NodeReference,
-    Placement, ReferenceInput, SystemNode,
+    CreateOutcome, DeleteOutcome, Destination, GenerateShape, JournalEntry, Node, NodePage,
+    NodeReference, Placement, ReferenceInput, SystemNode,
 };
 pub use pagination::{Cursor, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, Page, ParseCursorError};
 pub use sync::{OutgoingSyncPackage, SyncApply};

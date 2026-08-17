@@ -543,18 +543,24 @@ impl App {
                         };
                         previous_count + usize::from(needs_next)
                     });
-                    let may_materialize_root = parent_id.is_some()
-                        && editor
-                            .text
-                            .split_once("[[")
-                            .is_some_and(|(_, rest)| rest.contains("]]"));
-                    let created = self.engine.create_node(input)?;
+                    let outcome = self.engine.create_node(input)?;
+                    let mut materialized_parents = Vec::new();
+                    for node in &outcome.materialized_nodes {
+                        if !materialized_parents.contains(&node.parent_id) {
+                            materialized_parents.push(node.parent_id);
+                        }
+                    }
+                    let created = outcome.node;
                     self.reload_changed_branch(parent_id)?;
                     self.load_to_count(parent_id, restore_count)?;
-                    if let Some(parent_id) = parent_id {
-                        if may_materialize_root && self.branches.contains_key(&None) {
-                            self.reload_branch(None)?;
+                    for materialized_parent in materialized_parents {
+                        if materialized_parent != parent_id
+                            && self.branches.contains_key(&materialized_parent)
+                        {
+                            self.reload_changed_branch(materialized_parent)?;
                         }
+                    }
+                    if let Some(parent_id) = parent_id {
                         self.expanded.insert(parent_id);
                     }
                     let loaded = self.branches.get(&parent_id).is_some_and(|branch| {

@@ -50,7 +50,7 @@ impl Engine {
         input.parent_id = Some(day_id);
         input.tags = entry.tags;
         input.references = entry.references;
-        let (id, history) = create_node_in_transaction(&transaction, input)?;
+        let (id, _, history) = create_node_in_transaction(&transaction, input)?;
         let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
         if changeset.is_some() {
             self.history.record_group(history);

@@ -4,15 +4,16 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::content::{
     canonicalize_tags, hydrate_nodes, materialize_references, prune_empty_unreferenced_roots,
-    push_history_step, replace_references, replace_tags, validate_references,
+    push_history_step, read_materialized_nodes, replace_references, replace_tags,
+    validate_references,
 };
 use crate::db::Engine;
 use crate::journal::{decode_system_key, journal_container, protected_node};
 use crate::order::{POSITION_STEP, position_at, position_for_placement};
 use crate::sync::{capture_session, commit_mutation};
 use crate::{
-    CreateNode, Cursor, DeleteOutcome, Destination, Error, GenerateShape, MAX_PAGE_SIZE,
-    NODE_ID_LENGTH, Node, NodeId, NodePage, Page, Placement, Result,
+    CreateNode, CreateOutcome, Cursor, DeleteOutcome, Destination, Error, GenerateShape,
+    MAX_PAGE_SIZE, NODE_ID_LENGTH, Node, NodeId, NodePage, Page, Placement, Result,
 };
 
 pub(crate) type RawNode = (Vec<u8>, Option<Vec<u8>>, i64, String, Option<String>);
@@ -36,18 +37,25 @@ impl Engine {
     /// Creates one node atomically.
     ///
     /// The parent and any relative placement reference are validated inside
-    /// the same transaction as the insertion.
-    pub fn create_node(&mut self, input: CreateNode) -> Result<Node> {
+    /// the same transaction as the insertion. The outcome identifies any
+    /// concept or Journal nodes materialized from complete unbound references.
+    pub fn create_node(&mut self, input: CreateNode) -> Result<CreateOutcome> {
         let captured = capture_session(&self.connection)?;
         let transaction = self.connection.unchecked_transaction()?;
-        let (id, history) = create_node_in_transaction(&transaction, input)?;
+        let (id, materialized_node_ids, history) = create_node_in_transaction(&transaction, input)?;
         let changeset = commit_mutation(transaction, captured, self.sync_device_id)?;
         if changeset.is_some() {
             self.history.record_group(history);
         }
 
-        self.node(id)?
-            .ok_or_else(|| Error::InvalidDatabase("a newly created node could not be read".into()))
+        let node = self.node(id)?.ok_or_else(|| {
+            Error::InvalidDatabase("a newly created node could not be read".into())
+        })?;
+        let materialized_nodes = read_materialized_nodes(self, materialized_node_ids)?;
+        Ok(CreateOutcome {
+            node,
+            materialized_nodes,
+        })
     }
 
     /// Reads one node by its stable identifier.
@@ -546,7 +554,7 @@ impl Engine {
 pub(crate) fn create_node_in_transaction(
     connection: &Connection,
     input: CreateNode,
-) -> Result<(NodeId, Vec<Vec<u8>>)> {
+) -> Result<(NodeId, Vec<NodeId>, Vec<Vec<u8>>)> {
     let CreateNode {
         parent_id,
         placement,
@@ -575,7 +583,8 @@ pub(crate) fn create_node_in_transaction(
     push_history_step(node_step, &mut history)?;
     let references = validate_references(connection, &text, references)?;
     let materialize_step = capture_session(connection)?;
-    let (references, _) = materialize_references(connection, &text, references)?;
+    let (references, materialized_node_ids) =
+        materialize_references(connection, &text, references)?;
     push_history_step(materialize_step, &mut history)?;
     let tag_step = capture_session(connection)?;
     replace_tags(connection, id, &tags)?;
@@ -583,7 +592,7 @@ pub(crate) fn create_node_in_transaction(
     let reference_step = capture_session(connection)?;
     replace_references(connection, id, &references)?;
     push_history_step(reference_step, &mut history)?;
-    Ok((id, history))
+    Ok((id, materialized_node_ids, history))
 }
 
 pub(crate) fn raw_node(row: &Row<'_>) -> rusqlite::Result<RawNode> {

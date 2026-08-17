@@ -40,12 +40,13 @@ fn create(engine: &mut Engine, text: &str) -> Node {
     engine
         .create_node(CreateNode::new(text))
         .expect("create node")
+        .node
 }
 
 fn create_child(engine: &mut Engine, parent_id: NodeId, text: &str) -> Node {
     let mut input = CreateNode::new(text);
     input.parent_id = Some(parent_id);
-    engine.create_node(input).expect("create child")
+    engine.create_node(input).expect("create child").node
 }
 
 fn create_referencing_child(
@@ -58,7 +59,7 @@ fn create_referencing_child(
     let mut input = CreateNode::new(text);
     input.parent_id = Some(parent_id);
     input.references = vec![reference(text, label, target_id)];
-    engine.create_node(input).expect("create reference")
+    engine.create_node(input).expect("create reference").node
 }
 
 #[test]
@@ -110,7 +111,7 @@ fn journal_days_are_visible_tagged_protected_and_referenceable() {
     let task_text = "Prepare release for [[2026-07-19]]";
     let mut task = CreateNode::new(task_text);
     task.references = vec![reference(task_text, "2026-07-19", day.id)];
-    let task = engine.create_node(task).expect("create planned task");
+    let task = engine.create_node(task).expect("create planned task").node;
     assert_eq!(task.references[0].target_id, day.id);
     assert_eq!(task.references[0].target_text, "2026-07-19");
 
@@ -520,7 +521,8 @@ fn search_prioritizes_concepts_then_tagged_notes_and_plain_text() {
     tagged_input.tags = vec!["project".into()];
     let tagged = engine
         .create_node(tagged_input)
-        .expect("create tagged note");
+        .expect("create tagged note")
+        .node;
     let plain = create(&mut engine, "vrac plain note");
 
     let results = engine.search("vrac", 8).expect("search vrac");
@@ -551,13 +553,14 @@ fn deleting_a_subtree_is_atomic_and_preserves_external_references() {
     let root = create(&mut engine, "Project");
     let mut child_input = CreateNode::new("Decision");
     child_input.parent_id = Some(root.id);
-    let child = engine.create_node(child_input).expect("create child");
+    let child = engine.create_node(child_input).expect("create child").node;
     let source_text = "See [[Decision]]";
     let mut source_input = CreateNode::new(source_text);
     source_input.references = vec![reference(source_text, "Decision", child.id)];
     let source = engine
         .create_node(source_input)
-        .expect("create external reference");
+        .expect("create external reference")
+        .node;
 
     assert!(matches!(
         engine.delete_node(root.id),
@@ -610,7 +613,7 @@ fn tags_are_canonical_sets_stored_outside_text() {
     let mut engine = Engine::open(database.path()).expect("open database");
     let mut input = CreateNode::new("Point on Project X");
     input.tags = vec![" Meeting ".into(), "DÉCISION".into(), "meeting".into()];
-    let node = engine.create_node(input).expect("create tagged node");
+    let node = engine.create_node(input).expect("create tagged node").node;
 
     assert_eq!(node.text, "Point on Project X");
     assert_eq!(node.tags, ["décision", "meeting"]);
@@ -693,30 +696,34 @@ fn references_resolve_current_target_text_without_rewriting_sources() {
     let mut engine = Engine::open(database.path()).expect("open database");
     let mut target_input = CreateNode::new("Project X");
     target_input.tags = vec!["project".into()];
-    let target = engine.create_node(target_input).expect("create target");
+    let target = engine
+        .create_node(target_input)
+        .expect("create target")
+        .node;
 
     let source_text = "Point on [[Project X]]";
     let mut source_input = CreateNode::new(source_text);
     source_input.tags = vec!["meeting".into()];
     source_input.references = vec![reference(source_text, "Project X", target.id)];
     let source = engine.create_node(source_input).expect("create source");
-    assert_eq!(source.references.len(), 1);
-    assert_eq!(source.references[0].target_text, "Project X");
-    assert_eq!(source.tags, ["meeting"]);
+    assert!(source.materialized_nodes.is_empty());
+    assert_eq!(source.node.references.len(), 1);
+    assert_eq!(source.node.references[0].target_text, "Project X");
+    assert_eq!(source.node.tags, ["meeting"]);
 
     engine
         .set_text(target.id, "Project Y".into())
         .expect("rename target");
-    let source_after_rename = engine.node(source.id).expect("read source").unwrap();
+    let source_after_rename = engine.node(source.node.id).expect("read source").unwrap();
     assert_eq!(source_after_rename.text, source_text);
     assert_eq!(source_after_rename.references[0].target_text, "Project Y");
 
     assert!(matches!(
-        engine.set_text(source.id, "would discard the reference".into()),
-        Err(Error::NodeHasReferences(id)) if id == source.id
+        engine.set_text(source.node.id, "would discard the reference".into()),
+        Err(Error::NodeHasReferences(id)) if id == source.node.id
     ));
     assert_eq!(
-        engine.node(source.id).unwrap().unwrap(),
+        engine.node(source.node.id).unwrap().unwrap(),
         source_after_rename
     );
 }
@@ -738,7 +745,8 @@ fn removing_references_prunes_only_empty_unreferenced_roots() {
     tagged_input.tags = vec!["project".into()];
     let tagged = engine
         .create_node(tagged_input)
-        .expect("create tagged target");
+        .expect("create tagged target")
+        .node;
 
     let parent = create(&mut engine, "Parent");
     let nested = create_child(&mut engine, parent.id, "Nested");
@@ -751,7 +759,8 @@ fn removing_references_prunes_only_empty_unreferenced_roots() {
     outgoing_input.references = vec![reference(outgoing_text, "Tagged", tagged.id)];
     let outgoing = engine
         .create_node(outgoing_input)
-        .expect("create target with outgoing content");
+        .expect("create target with outgoing content")
+        .node;
 
     let text = "[[Empty]] [[Shared]] [[Tagged]] [[Nested]] [[With child]] [[See Tagged]]";
     let mut source_input = CreateNode::new(text);
@@ -763,7 +772,10 @@ fn removing_references_prunes_only_empty_unreferenced_roots() {
         reference(text, "With child", with_child.id),
         reference(text, "See Tagged", outgoing.id),
     ];
-    let source = engine.create_node(source_input).expect("create references");
+    let source = engine
+        .create_node(source_input)
+        .expect("create references")
+        .node;
 
     assert_eq!(
         engine
@@ -814,7 +826,12 @@ fn complete_reference_syntax_reuses_or_creates_concepts_atomically() {
     let created = engine
         .create_node(CreateNode::new("Created with [[Create concept]]"))
         .expect("materialize while creating");
-    assert_eq!(created.references[0].target_text, "Create concept");
+    assert_eq!(created.node.references[0].target_text, "Create concept");
+    assert_eq!(
+        created.materialized_nodes[0].id,
+        created.node.references[0].target_id
+    );
+    assert_eq!(created.materialized_nodes[0].text, "Create concept");
 
     let plain = create(&mut engine, "Plain");
     engine
@@ -940,11 +957,11 @@ fn paths_are_root_first_persisted_and_cycle_safe() {
     let root = create(&mut engine, "Root");
     let mut child_input = CreateNode::new("Child");
     child_input.parent_id = Some(root.id);
-    let child = engine.create_node(child_input).expect("create child");
+    let child = engine.create_node(child_input).expect("create child").node;
     let mut leaf_input = CreateNode::new("Leaf");
     leaf_input.parent_id = Some(child.id);
     leaf_input.tags = vec!["decision".into()];
-    let leaf = engine.create_node(leaf_input).expect("create leaf");
+    let leaf = engine.create_node(leaf_input).expect("create leaf").node;
 
     assert_eq!(
         engine
@@ -995,7 +1012,7 @@ fn paths_handle_substantial_depth_without_one_query_per_parent() {
     for index in 0..2_048 {
         let mut input = CreateNode::new(format!("Node {index}"));
         input.parent_id = parent;
-        let node = engine.create_node(input).expect("create deep node");
+        let node = engine.create_node(input).expect("create deep node").node;
         parent = Some(node.id);
         expected.push(node.id);
     }
@@ -1015,10 +1032,10 @@ fn node_reads_include_current_child_presence() {
 
     let mut child_input = CreateNode::new("Child");
     child_input.parent_id = Some(root.id);
-    let child = engine.create_node(child_input).expect("create child");
+    let child = engine.create_node(child_input).expect("create child").node;
     let mut leaf_input = CreateNode::new("Leaf");
     leaf_input.parent_id = Some(child.id);
-    let leaf = engine.create_node(leaf_input).expect("create leaf");
+    let leaf = engine.create_node(leaf_input).expect("create leaf").node;
 
     assert!(engine.node(root.id).unwrap().unwrap().has_children);
     assert!(

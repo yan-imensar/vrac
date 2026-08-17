@@ -29,7 +29,8 @@ fn sqlite_session_captures_the_complete_canonical_model() {
     let mut engine = Engine::open(&first_path).expect("open first workspace");
     let target = engine
         .create_node(CreateNode::new("Project X"))
-        .expect("create target");
+        .expect("create target")
+        .node;
     engine
         .checkpoint(&second_path)
         .expect("clone initial workspace");
@@ -111,10 +112,12 @@ fn non_conflicting_changes_merge_and_real_conflicts_abort_atomically() {
     let mut engine = Engine::open(&first_path).expect("open first workspace");
     let first_node = engine
         .create_node(CreateNode::new("First"))
-        .expect("create first node");
+        .expect("create first node")
+        .node;
     let second_node = engine
         .create_node(CreateNode::new("Second"))
-        .expect("create second node");
+        .expect("create second node")
+        .node;
     engine
         .checkpoint(&second_path)
         .expect("clone initial workspace");
