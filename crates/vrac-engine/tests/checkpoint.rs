@@ -1,6 +1,6 @@
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
-use vrac::{CheckIssue, CreateNode, Engine, Error, ReferenceInput, SyncDeviceId};
+use vrac_engine::{CheckIssue, CreateNode, Engine, Error, ReferenceInput, SyncDeviceId};
 
 #[test]
 fn a_checkpoint_is_an_independent_valid_snapshot_of_an_open_workspace() {

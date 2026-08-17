@@ -3,7 +3,7 @@ use std::io::{Error as IoError, ErrorKind};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use vrac::{
+use vrac_engine::{
     CreateNode, Destination, Engine, GenerateShape, JournalEntry, MAX_PAGE_SIZE, Page, Placement,
     ReferenceInput, SyncDeviceId,
 };
@@ -236,7 +236,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let search_p95 = measure_p95(|| {
         let nodes = engine.search("decision 42", 8)?;
         if nodes.first().is_none_or(|node| node.id != search_target) {
-            return Err(vrac::Error::InvalidDatabase(
+            return Err(vrac_engine::Error::InvalidDatabase(
                 "the search performance probe was not found".into(),
             ));
         }
@@ -247,7 +247,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
     let tags_p95 = measure_p95(|| {
         let tags = engine.tags("dec", 8)?;
         if tags.first().is_none_or(|tag| tag != "decision") {
-            return Err(vrac::Error::InvalidDatabase(
+            return Err(vrac_engine::Error::InvalidDatabase(
                 "the tag completion performance probe was not found".into(),
             ));
         }
@@ -265,7 +265,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
             },
         )?;
         if page.contexts.len() != METADATA_PAGE_SIZE {
-            return Err(vrac::Error::InvalidDatabase(
+            return Err(vrac_engine::Error::InvalidDatabase(
                 "the contextual backlink page is incomplete".into(),
             ));
         }
@@ -283,7 +283,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
             },
         )?;
         if page.contexts.len() != METADATA_PAGE_SIZE {
-            return Err(vrac::Error::InvalidDatabase(
+            return Err(vrac_engine::Error::InvalidDatabase(
                 "the tagged contextual backlink page is incomplete".into(),
             ));
         }
@@ -297,7 +297,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
             .first()
             .is_none_or(|facet| facet.tag != "decision" || facet.count != 100)
         {
-            return Err(vrac::Error::InvalidDatabase(
+            return Err(vrac_engine::Error::InvalidDatabase(
                 "the contextual backlink tag counts are incomplete".into(),
             ));
         }
@@ -479,7 +479,9 @@ fn print_duration(name: &str, duration: Duration) {
     println!("{name}\t{:.3}\tms", duration.as_secs_f64() * 1_000.0);
 }
 
-fn measure_p95(mut operation: impl FnMut() -> vrac::Result<()>) -> vrac::Result<Duration> {
+fn measure_p95(
+    mut operation: impl FnMut() -> vrac_engine::Result<()>,
+) -> vrac_engine::Result<Duration> {
     let mut samples = Vec::with_capacity(SAMPLE_COUNT);
     for _ in 0..SAMPLE_COUNT {
         let started = Instant::now();

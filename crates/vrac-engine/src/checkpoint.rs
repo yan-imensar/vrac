@@ -23,9 +23,9 @@ impl Engine {
     /// ```
     /// let directory = tempfile::tempdir()?;
     /// let checkpoint = directory.path().join("checkpoint.vrac");
-    /// let engine = vrac::Engine::open(":memory:")?;
+    /// let engine = vrac_engine::Engine::open(":memory:")?;
     /// engine.checkpoint(&checkpoint)?;
-    /// assert!(vrac::Engine::open(checkpoint)?.check()?.is_ok());
+    /// assert!(vrac_engine::Engine::open(checkpoint)?.check()?.is_ok());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn checkpoint(&self, destination: impl AsRef<Path>) -> Result<()> {

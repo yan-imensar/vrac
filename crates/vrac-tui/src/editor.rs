@@ -1,7 +1,7 @@
 //! Inline editor state and terminal-width-aware caret movement.
 
 use unicode_width::UnicodeWidthChar;
-use vrac::{NodeId, Placement, ReferenceInput};
+use vrac_engine::{NodeId, Placement, ReferenceInput};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum EditTarget {

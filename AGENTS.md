@@ -20,11 +20,18 @@ A speed optimization must never silently weaken durability or integrity.
 
 ## Architecture boundaries
 
-- `vrac-engine` is the engine package and exposes the `vrac` library. It owns
-  the model, business rules, SQLite schema, queries, and transactions.
+- `vrac-engine` is the engine package and exposes the `vrac_engine` library. It
+  owns the model, business rules, SQLite schema, queries, transactions, and
+  synchronization protocol.
+- `vrac-workspace` owns local application data, device identity, provider
+  layout, checkpoints, and synchronization orchestration. It has no user
+  interface and accesses canonical state only through `vrac-engine`.
 - `vrac` is the public product package. Its binary opens the TUI or parses
-  scriptable commands, calls the engine, presents results, and selects exit
-  codes.
+  scriptable commands, composes the workspace and frontend crates, presents
+  results, and selects exit codes.
+- `vrac-tui` is the terminal frontend. It owns terminal interaction, transient
+  view state, and rendering, but no workspace layout or synchronization
+  protocol details.
 - The CLI, TUI, and future interfaces contain no SQL or business rules.
 - The engine depends on no user interface, graphical framework, or network
   service.

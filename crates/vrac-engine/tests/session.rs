@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use rusqlite::session::{ConflictAction, ConflictType, Session};
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
-use vrac::{CreateNode, Engine};
+use vrac_engine::{CreateNode, Engine};
 
 fn raw_connection(path: &std::path::Path) -> Connection {
     let connection = Connection::open(path).expect("open raw workspace");
@@ -90,7 +90,7 @@ fn sqlite_session_captures_the_complete_canonical_model() {
 
     let second = Engine::open(&second_path).expect("open synchronized workspace");
     let source = second
-        .node(vrac::NodeId::from_bytes(source_id))
+        .node(vrac_engine::NodeId::from_bytes(source_id))
         .expect("read source")
         .expect("source exists");
     assert_eq!(source.tags, ["decision", "meeting"]);

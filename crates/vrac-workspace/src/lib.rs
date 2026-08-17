@@ -1,43 +1,124 @@
+//! Local workspace lifecycle and synchronization for Vrac clients.
+//!
+//! This crate keeps the active SQLite database on local storage while a
+//! provider folder contains only durable checkpoints and immutable sync
+//! packages. It performs no user interaction and contains no presentation
+//! logic.
+
+#![deny(missing_docs)]
+
+use std::error::Error as StdError;
+use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use vrac::{Engine, Error, OutgoingSyncPackage, SyncApply, SyncDeviceId, WorkspaceId};
+use vrac_engine::{
+    Engine, Error as EngineError, OutgoingSyncPackage, SyncApply, SyncDeviceId, WorkspaceId,
+};
 
 const WORKSPACE_ID_FILE: &str = "workspace-id";
 const CHECKPOINT_FILE: &str = "checkpoint.vrac";
 const CHANGES_DIRECTORY: &str = "changes";
 const CONFIG_FILE: &str = "workspace-folder";
 
-pub(crate) struct OpenedWorkspace {
-    pub(crate) engine: Engine,
-    pub(crate) workspace: Workspace,
-    pub(crate) initial_sync: SyncReport,
+/// A local engine paired with its validated provider workspace.
+pub struct OpenedWorkspace {
+    /// Active engine backed by a database in local application data.
+    pub engine: Engine,
+    /// Provider workspace used to exchange immutable synchronization packages.
+    pub workspace: Workspace,
+    /// Synchronization performed while opening the workspace.
+    pub initial_sync: SyncReport,
 }
 
-pub(crate) struct Workspace {
+/// A validated provider folder associated with one Vrac workspace.
+pub struct Workspace {
     folder: PathBuf,
 }
 
+/// Outcome of one synchronization round.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct SyncReport {
-    pub(crate) imported: usize,
-    pub(crate) published: usize,
+pub struct SyncReport {
+    /// Packages imported into the active local database.
+    pub imported: usize,
+    /// Packages published to the provider folder.
+    pub published: usize,
 }
 
-pub(crate) fn configured_folder(data_directory: &Path) -> Result<Option<PathBuf>, String> {
+/// Error returned while opening, configuring, or synchronizing a workspace.
+#[derive(Debug)]
+pub enum Error {
+    /// Failure reported by the storage engine.
+    Engine(EngineError),
+    /// Failure reported by the local filesystem.
+    Io(std::io::Error),
+    /// Invalid or inconsistent workspace configuration.
+    InvalidWorkspace(String),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Engine(error) => error.fmt(formatter),
+            Self::Io(error) => error.fmt(formatter),
+            Self::InvalidWorkspace(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::Engine(error) => Some(error),
+            Self::Io(error) => Some(error),
+            Self::InvalidWorkspace(_) => None,
+        }
+    }
+}
+
+impl From<EngineError> for Error {
+    fn from(error: EngineError) -> Self {
+        Self::Engine(error)
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<String> for Error {
+    fn from(message: String) -> Self {
+        Self::InvalidWorkspace(message)
+    }
+}
+
+impl From<&str> for Error {
+    fn from(message: &str) -> Self {
+        Self::InvalidWorkspace(message.into())
+    }
+}
+
+/// Result returned by workspace operations.
+pub type Result<T> = std::result::Result<T, Error>;
+
+/// Reads the previously selected provider folder from local application data.
+pub fn configured_folder(data_directory: &Path) -> Result<Option<PathBuf>> {
     let path = data_directory.join(CONFIG_FILE);
     let value = match fs::read_to_string(path) {
         Ok(value) => value,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
+        Err(error) => return Err(error.into()),
     };
     let value = value.strip_suffix('\n').unwrap_or(&value);
     folder_path(value).map(Some)
 }
 
-pub(crate) fn remember_folder(data_directory: &Path, folder: &Path) -> Result<(), String> {
-    fs::create_dir_all(data_directory).map_err(io_error)?;
+/// Atomically remembers the selected provider folder in local application data.
+pub fn remember_folder(data_directory: &Path, folder: &Path) -> Result<()> {
+    fs::create_dir_all(data_directory)?;
     let value = folder
         .to_str()
         .ok_or_else(|| "the workspace folder path is not valid Unicode".to_string())?;
@@ -51,14 +132,15 @@ pub(crate) fn remember_folder(data_directory: &Path, folder: &Path) -> Result<()
 }
 
 impl Workspace {
-    pub(crate) fn open(folder: &Path, data_directory: &Path) -> Result<OpenedWorkspace, String> {
-        let folder = folder.canonicalize().map_err(io_error)?;
+    /// Opens or creates a workspace and performs its initial synchronization.
+    pub fn open(folder: &Path, data_directory: &Path) -> Result<OpenedWorkspace> {
+        let folder = folder.canonicalize()?;
         if !folder.is_dir() {
             return Err("the workspace path is not a directory".into());
         }
 
-        fs::create_dir_all(data_directory.join("workspaces")).map_err(io_error)?;
-        let local_data = data_directory.canonicalize().map_err(io_error)?;
+        fs::create_dir_all(data_directory.join("workspaces"))?;
+        let local_data = data_directory.canonicalize()?;
         if folder.starts_with(&local_data) || local_data.starts_with(&folder) {
             return Err(
                 "the selected workspace folder must be separate from Vrac's local application data"
@@ -77,8 +159,8 @@ impl Workspace {
         if !database.is_file() {
             install_checkpoint(&folder, &database, workspace_id, device_id)?;
         }
-        let mut engine = Engine::open_synced(&database, device_id).map_err(engine_error)?;
-        if engine.workspace_id().map_err(engine_error)? != workspace_id {
+        let mut engine = Engine::open_synced(&database, device_id)?;
+        if engine.workspace_id()? != workspace_id {
             return Err("the local database belongs to another workspace".into());
         }
 
@@ -91,12 +173,14 @@ impl Workspace {
         })
     }
 
-    pub(crate) fn folder(&self) -> &Path {
+    /// Returns the provider folder associated with this workspace.
+    pub fn folder(&self) -> &Path {
         &self.folder
     }
 
-    pub(crate) fn sync(&self, engine: &mut Engine) -> Result<SyncReport, String> {
-        let workspace_id = engine.workspace_id().map_err(engine_error)?;
+    /// Imports and publishes every currently available synchronization package.
+    pub fn sync(&self, engine: &mut Engine) -> Result<SyncReport> {
+        let workspace_id = engine.workspace_id()?;
         validate_provider(&self.folder, workspace_id)?;
         let changes = self.folder.join(CHANGES_DIRECTORY);
         Ok(SyncReport {
@@ -110,7 +194,7 @@ fn create_workspace(
     folder: &Path,
     data_directory: &Path,
     device_id: SyncDeviceId,
-) -> Result<WorkspaceId, String> {
+) -> Result<WorkspaceId> {
     for name in [CHECKPOINT_FILE, CHANGES_DIRECTORY] {
         if folder.join(name).exists() {
             return Err("the selected folder contains incomplete Vrac workspace data".into());
@@ -121,8 +205,8 @@ fn create_workspace(
     if partial.exists() {
         return Err("an incomplete local workspace creation already exists".into());
     }
-    let candidate = Engine::open_synced(&partial, device_id).map_err(engine_error)?;
-    let workspace_id = candidate.workspace_id().map_err(engine_error)?;
+    let candidate = Engine::open_synced(&partial, device_id)?;
+    let workspace_id = candidate.workspace_id()?;
     let destination = local_database(data_directory, workspace_id);
     if destination.exists() {
         drop(candidate);
@@ -130,22 +214,23 @@ fn create_workspace(
         return Err("the local workspace already exists".into());
     }
     let created = create_provider(folder, workspace_id, |path| {
-        candidate.checkpoint(path).map_err(engine_error)
+        candidate.checkpoint(path)?;
+        Ok(())
     });
     drop(candidate);
     if let Err(error) = created {
         let _ = fs::remove_file(&partial);
         return Err(error);
     }
-    fs::rename(partial, destination).map_err(io_error)?;
+    fs::rename(partial, destination)?;
     Ok(workspace_id)
 }
 
 fn create_provider(
     folder: &Path,
     workspace_id: WorkspaceId,
-    checkpoint: impl FnOnce(&Path) -> Result<(), String>,
-) -> Result<(), String> {
+    checkpoint: impl FnOnce(&Path) -> Result<()>,
+) -> Result<()> {
     let checkpoint_path = folder.join(CHECKPOINT_FILE);
     let changes = folder.join(CHANGES_DIRECTORY);
     let identity = folder.join(WORKSPACE_ID_FILE);
@@ -153,11 +238,11 @@ fn create_provider(
         return Err("the selected folder already contains Vrac workspace data".into());
     }
 
-    fs::create_dir(&changes).map_err(io_error)?;
+    fs::create_dir(&changes)?;
     let partial = folder.join("checkpoint.partial");
     let result = (|| {
         checkpoint(&partial)?;
-        fs::rename(&partial, &checkpoint_path).map_err(io_error)?;
+        fs::rename(&partial, &checkpoint_path)?;
         atomic_write(&identity, workspace_id.to_string().as_bytes())
     })();
     if result.is_err() {
@@ -174,7 +259,7 @@ fn install_checkpoint(
     destination: &Path,
     workspace_id: WorkspaceId,
     device_id: SyncDeviceId,
-) -> Result<(), String> {
+) -> Result<()> {
     let source = folder.join(CHECKPOINT_FILE);
     if !source.is_file() {
         return Err("the workspace folder has no usable checkpoint".into());
@@ -188,7 +273,7 @@ fn install_checkpoint(
         Ok(candidate) => candidate,
         Err(error) => {
             let _ = fs::remove_file(&partial);
-            return Err(error.to_string());
+            return Err(error.into());
         }
     };
     let valid_identity = candidate
@@ -204,13 +289,14 @@ fn install_checkpoint(
         }
         Err(error) => {
             let _ = fs::remove_file(&partial);
-            return Err(error.to_string());
+            return Err(error.into());
         }
     }
-    fs::rename(partial, destination).map_err(io_error)
+    fs::rename(partial, destination)?;
+    Ok(())
 }
 
-fn validate_provider(folder: &Path, workspace_id: WorkspaceId) -> Result<(), String> {
+fn validate_provider(folder: &Path, workspace_id: WorkspaceId) -> Result<()> {
     let provider_id = read_provider_id(folder);
     if !folder.is_dir()
         || !folder.join(CHECKPOINT_FILE).is_file()
@@ -223,12 +309,11 @@ fn validate_provider(folder: &Path, workspace_id: WorkspaceId) -> Result<(), Str
     Ok(())
 }
 
-fn read_provider_id(folder: &Path) -> Result<WorkspaceId, String> {
-    fs::read_to_string(folder.join(WORKSPACE_ID_FILE))
-        .map_err(io_error)?
+fn read_provider_id(folder: &Path) -> Result<WorkspaceId> {
+    fs::read_to_string(folder.join(WORKSPACE_ID_FILE))?
         .trim()
         .parse()
-        .map_err(|error: vrac::ParseWorkspaceIdError| error.to_string())
+        .map_err(|error: vrac_engine::ParseWorkspaceIdError| error.to_string().into())
 }
 
 fn local_database(data_directory: &Path, workspace_id: WorkspaceId) -> PathBuf {
@@ -237,17 +322,17 @@ fn local_database(data_directory: &Path, workspace_id: WorkspaceId) -> PathBuf {
         .join(format!("{workspace_id}.vrac"))
 }
 
-fn load_device_id(data_directory: &Path) -> Result<SyncDeviceId, String> {
+fn load_device_id(data_directory: &Path) -> Result<SyncDeviceId> {
     let path = data_directory.join("device-id");
     if path.is_file() {
-        return parse_device_id(fs::read_to_string(path).map_err(io_error)?.trim());
+        return parse_device_id(fs::read_to_string(path)?.trim());
     }
-    let id = SyncDeviceId::generate().map_err(engine_error)?;
+    let id = SyncDeviceId::generate()?;
     atomic_write(&path, id.to_string().as_bytes())?;
     Ok(id)
 }
 
-fn parse_device_id(value: &str) -> Result<SyncDeviceId, String> {
+fn parse_device_id(value: &str) -> Result<SyncDeviceId> {
     if value.len() != 32 {
         return Err("the local synchronization device identifier is invalid".into());
     }
@@ -264,11 +349,10 @@ fn parse_device_id(value: &str) -> Result<SyncDeviceId, String> {
     Ok(SyncDeviceId::from_bytes(bytes))
 }
 
-fn import_packages(engine: &mut Engine, provider: &Path) -> Result<usize, String> {
-    let mut pending: Vec<PathBuf> = fs::read_dir(provider)
-        .map_err(io_error)?
-        .map(|entry| entry.map(|entry| entry.path()).map_err(io_error))
-        .collect::<Result<Vec<_>, _>>()?
+fn import_packages(engine: &mut Engine, provider: &Path) -> Result<usize> {
+    let mut pending: Vec<PathBuf> = fs::read_dir(provider)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?
         .into_iter()
         .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("vrac-sync"))
         .collect();
@@ -280,98 +364,95 @@ fn import_packages(engine: &mut Engine, provider: &Path) -> Result<usize, String
         let mut deferred = Vec::new();
         let mut dependency_error = None;
         for path in pending {
-            let bytes = fs::read(&path).map_err(io_error)?;
+            let bytes = fs::read(&path)?;
             match engine.apply_sync_package(&bytes) {
                 Ok(SyncApply::Applied) => imported += 1,
                 Ok(SyncApply::AlreadyApplied) => {}
-                Err(Error::SyncDependencyMissing { .. }) => {
+                Err(EngineError::SyncDependencyMissing { .. }) => {
                     dependency_error =
                         Some("a sync package is waiting for an earlier package".to_string());
                     deferred.push(path);
                 }
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(error.into()),
             }
         }
         if deferred.len() == count_before {
-            return Err(dependency_error.unwrap_or_else(|| {
-                "synchronization packages could not make progress".to_string()
-            }));
+            return Err(dependency_error
+                .unwrap_or_else(|| "synchronization packages could not make progress".to_string())
+                .into());
         }
         pending = deferred;
     }
     Ok(imported)
 }
 
-fn publish_packages(engine: &mut Engine, provider: &Path) -> Result<usize, String> {
+fn publish_packages(engine: &mut Engine, provider: &Path) -> Result<usize> {
     let mut published = 0;
-    while let Some(package) = engine.next_sync_package().map_err(engine_error)? {
+    while let Some(package) = engine.next_sync_package()? {
         publish_package(provider, &package)?;
-        engine
-            .confirm_sync_package(&package)
-            .map_err(engine_error)?;
+        engine.confirm_sync_package(&package)?;
         published += 1;
     }
     Ok(published)
 }
 
-fn publish_package(provider: &Path, package: &OutgoingSyncPackage) -> Result<(), String> {
+fn publish_package(provider: &Path, package: &OutgoingSyncPackage) -> Result<()> {
     let destination = provider.join(package.file_name());
     if destination.exists() {
-        if fs::read(&destination).map_err(io_error)? == package.bytes() {
+        if fs::read(&destination)? == package.bytes() {
             return Ok(());
         }
         return Err(format!(
             "the immutable sync package {} has different contents",
             package.file_name()
-        ));
+        )
+        .into());
     }
     let partial = destination.with_extension("partial");
     if partial.exists() {
-        if fs::read(&partial).map_err(io_error)? != package.bytes() {
+        if fs::read(&partial)? != package.bytes() {
             return Err("an incomplete sync package has different contents".into());
         }
     } else {
         write_new(&partial, package.bytes())?;
     }
-    fs::rename(partial, destination).map_err(io_error)
+    fs::rename(partial, destination)?;
+    Ok(())
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let partial = path.with_extension("tmp");
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
         .write(true)
-        .open(&partial)
-        .map_err(io_error)?;
-    file.write_all(bytes).map_err(io_error)?;
-    file.sync_all().map_err(io_error)?;
+        .open(&partial)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
     drop(file);
-    fs::rename(partial, path).map_err(io_error)
+    fs::rename(partial, path)?;
+    Ok(())
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(path)
-        .map_err(io_error)?;
-    file.write_all(bytes).map_err(io_error)?;
-    file.sync_all().map_err(io_error)
+fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
 }
 
-fn copy_durable(source: &Path, destination: &Path) -> Result<(), String> {
-    let mut source = fs::File::open(source).map_err(io_error)?;
+fn copy_durable(source: &Path, destination: &Path) -> Result<()> {
+    let mut source = fs::File::open(source)?;
     let mut destination = OpenOptions::new()
         .create_new(true)
         .write(true)
-        .open(destination)
-        .map_err(io_error)?;
-    std::io::copy(&mut source, &mut destination).map_err(io_error)?;
-    destination.sync_all().map_err(io_error)
+        .open(destination)?;
+    std::io::copy(&mut source, &mut destination)?;
+    destination.sync_all()?;
+    Ok(())
 }
 
-fn folder_path(value: &str) -> Result<PathBuf, String> {
+fn folder_path(value: &str) -> Result<PathBuf> {
     if value.contains(['\n', '\r']) {
         return Err("the workspace folder path contains an unsupported line break".into());
     }
@@ -382,18 +463,10 @@ fn folder_path(value: &str) -> Result<PathBuf, String> {
     Ok(folder)
 }
 
-fn engine_error(error: vrac::Error) -> String {
-    error.to_string()
-}
-
-fn io_error(error: std::io::Error) -> String {
-    error.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vrac::{CreateNode, Page, Placement};
+    use vrac_engine::{CreateNode, Page, Placement};
 
     fn create_root(engine: &mut Engine, text: &str) {
         let mut input = CreateNode::new(text);

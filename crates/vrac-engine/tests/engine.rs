@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
-use vrac::{
+use vrac_engine::{
     CheckIssue, CreateNode, Cursor, Destination, Engine, Error, GenerateShape, Node, NodeId, Page,
     Placement, SyncDeviceId,
 };
@@ -86,9 +86,9 @@ fn a_node_can_be_read_after_reopening_the_database() {
 
 #[test]
 fn workspace_identifiers_round_trip_without_panicking_on_invalid_unicode() {
-    let id = vrac::WorkspaceId::from_bytes([0xab; vrac::WORKSPACE_ID_LENGTH]);
+    let id = vrac_engine::WorkspaceId::from_bytes([0xab; vrac_engine::WORKSPACE_ID_LENGTH]);
     assert_eq!(id.to_string().parse(), Ok(id));
-    assert!("é".repeat(16).parse::<vrac::WorkspaceId>().is_err());
+    assert!("é".repeat(16).parse::<vrac_engine::WorkspaceId>().is_err());
 }
 
 #[test]

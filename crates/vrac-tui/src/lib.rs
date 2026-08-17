@@ -1,7 +1,8 @@
 //! Keyboard-first terminal client for Vrac.
 //!
 //! This crate owns transient interaction and rendering state. Persistent data
-//! and every business mutation remain delegated to the `vrac` engine.
+//! and every business mutation remain delegated to `vrac-engine`; local
+//! workspace lifecycle and synchronization are delegated to `vrac-workspace`.
 
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -18,9 +19,10 @@ use crossterm::event::{
 use crossterm::execute;
 use crossterm::style::{Attribute, ResetColor, SetAttribute};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use vrac::{
+use vrac_engine::{
     CreateNode, Cursor, Destination, Engine, Node, NodeId, Page, Placement, ReferenceInput,
 };
+use vrac_workspace::{OpenedWorkspace, Workspace, configured_folder, remember_folder};
 
 mod commands;
 mod config;
@@ -29,19 +31,9 @@ mod performance;
 mod prompts;
 mod setup;
 mod ui;
-mod workspace;
 
 #[doc(hidden)]
 pub use performance::run_reference_scenario;
-
-use setup::{
-    choose_workspace_folder as pick_workspace_folder,
-    choose_workspace_folder_with_status as pick_workspace_folder_with_status,
-};
-use ui::draw;
-#[cfg(test)]
-use ui::{display_lines, draw_inline_content, split_content, wrap_text};
-use workspace::{OpenedWorkspace, Workspace, configured_folder, remember_folder};
 
 use commands::{COMMANDS, Command};
 use config::Config;
@@ -49,6 +41,13 @@ use editor::{EditTarget, Editor, char_to_byte};
 use prompts::{
     BacklinkView, Launcher, LauncherItem, LauncherKind, ReferencePrompt, TagPrompt, TagTarget,
 };
+use setup::{
+    choose_workspace_folder as pick_workspace_folder,
+    choose_workspace_folder_with_status as pick_workspace_folder_with_status,
+};
+use ui::draw;
+#[cfg(test)]
+use ui::{display_lines, draw_inline_content, split_content, wrap_text};
 
 const USAGE: &str = "Usage: vrac-tui [workspace-folder]";
 const SYNC_INTERVAL: Duration = Duration::from_secs(2);
@@ -375,13 +374,13 @@ struct App {
 }
 
 impl App {
-    fn open_with_lines(mut engine: Engine, lines: bool) -> vrac::Result<Self> {
+    fn open_with_lines(mut engine: Engine, lines: bool) -> vrac_engine::Result<Self> {
         let today = jiff::Zoned::now().date().to_string();
         let day = engine.journal_day(&today)?;
         Self::open_with_focus_and_lines(engine, Some(day.id), lines)
     }
 
-    fn open_with_focus(engine: Engine, focus: Option<NodeId>) -> vrac::Result<Self> {
+    fn open_with_focus(engine: Engine, focus: Option<NodeId>) -> vrac_engine::Result<Self> {
         Self::open_with_focus_and_lines(engine, focus, true)
     }
 
@@ -389,7 +388,7 @@ impl App {
         engine: Engine,
         focus: Option<NodeId>,
         lines: bool,
-    ) -> vrac::Result<Self> {
+    ) -> vrac_engine::Result<Self> {
         let mut app = Self {
             engine,
             branches: HashMap::new(),
@@ -422,7 +421,7 @@ impl App {
         Ok(app)
     }
 
-    fn reload_branch(&mut self, parent_id: Option<NodeId>) -> vrac::Result<()> {
+    fn reload_branch(&mut self, parent_id: Option<NodeId>) -> vrac_engine::Result<()> {
         let page = self.engine.children(parent_id, Page::default())?;
         for node in &page.nodes {
             if !node.has_children {
@@ -440,7 +439,7 @@ impl App {
         Ok(())
     }
 
-    fn reload_changed_branch(&mut self, parent_id: Option<NodeId>) -> vrac::Result<()> {
+    fn reload_changed_branch(&mut self, parent_id: Option<NodeId>) -> vrac_engine::Result<()> {
         self.reload_branch(parent_id)?;
         if let Some(parent_id) = parent_id {
             self.refresh_cached_node(parent_id)?;
@@ -448,7 +447,7 @@ impl App {
         Ok(())
     }
 
-    fn load_more(&mut self, parent_id: Option<NodeId>) -> vrac::Result<bool> {
+    fn load_more(&mut self, parent_id: Option<NodeId>) -> vrac_engine::Result<bool> {
         let Some(after) = self.branches.get(&parent_id).and_then(|branch| branch.next) else {
             return Ok(false);
         };
@@ -472,7 +471,7 @@ impl App {
         &mut self,
         parent_id: Option<NodeId>,
         previous_count: usize,
-    ) -> vrac::Result<()> {
+    ) -> vrac_engine::Result<()> {
         while self
             .branches
             .get(&parent_id)
@@ -494,7 +493,7 @@ impl App {
         label
     }
 
-    fn set_focus(&mut self, focus: Option<NodeId>) -> vrac::Result<()> {
+    fn set_focus(&mut self, focus: Option<NodeId>) -> vrac_engine::Result<()> {
         if !self.branches.contains_key(&focus) {
             self.reload_branch(focus)?;
         }
@@ -512,21 +511,21 @@ impl App {
         Ok(())
     }
 
-    fn zoom_selected(&mut self) -> vrac::Result<()> {
+    fn zoom_selected(&mut self) -> vrac_engine::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
         self.set_focus(Some(node.id))
     }
 
-    fn zoom_out(&mut self) -> vrac::Result<()> {
+    fn zoom_out(&mut self) -> vrac_engine::Result<()> {
         let Some(current) = self.focus else {
             return Ok(());
         };
         let current_node = self
             .engine
             .node(current)?
-            .ok_or(vrac::Error::NodeNotFound(current))?;
+            .ok_or(vrac_engine::Error::NodeNotFound(current))?;
         self.set_focus(current_node.parent_id)?;
         self.selected = Some(current);
         Ok(())
@@ -575,7 +574,7 @@ impl App {
             .cloned()
     }
 
-    fn handle_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+    fn handle_key(&mut self, key: KeyEvent) -> vrac_engine::Result<Action> {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             self.finish_editor()?;
             return Ok(Action::Quit);
@@ -601,7 +600,7 @@ impl App {
         }
     }
 
-    fn handle_paste(&mut self, pasted: &str) -> vrac::Result<()> {
+    fn handle_paste(&mut self, pasted: &str) -> vrac_engine::Result<()> {
         let pasted = pasted
             .replace("\r\n", "\n")
             .replace('\r', "\n")
@@ -637,7 +636,7 @@ impl App {
         Ok(())
     }
 
-    fn handle_normal_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+    fn handle_normal_key(&mut self, key: KeyEvent) -> vrac_engine::Result<Action> {
         if let Some(pending) = self.pending_key.take() {
             self.status.clear();
             if key.code == KeyCode::Char(pending) {
@@ -699,7 +698,7 @@ impl App {
         Ok(Action::Continue)
     }
 
-    fn handle_launcher_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+    fn handle_launcher_key(&mut self, key: KeyEvent) -> vrac_engine::Result<Action> {
         match key.code {
             KeyCode::Esc => {
                 self.launcher = None;
@@ -756,7 +755,7 @@ impl App {
         Ok(Action::Continue)
     }
 
-    fn handle_tag_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+    fn handle_tag_key(&mut self, key: KeyEvent) -> vrac_engine::Result<Action> {
         match key.code {
             KeyCode::Esc => {
                 self.tag_prompt = None;
@@ -806,7 +805,7 @@ impl App {
         Ok(Action::Continue)
     }
 
-    fn handle_backlink_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+    fn handle_backlink_key(&mut self, key: KeyEvent) -> vrac_engine::Result<Action> {
         match key.code {
             KeyCode::Esc | KeyCode::Char('b') => {
                 self.backlinks = None;
@@ -839,7 +838,7 @@ impl App {
         Ok(Action::Continue)
     }
 
-    fn handle_reference_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+    fn handle_reference_key(&mut self, key: KeyEvent) -> vrac_engine::Result<Action> {
         match key.code {
             KeyCode::Esc => {
                 self.reference_prompt = None;
@@ -911,7 +910,7 @@ impl App {
         Ok(Action::Continue)
     }
 
-    fn handle_editor_key(&mut self, key: KeyEvent) -> vrac::Result<Action> {
+    fn handle_editor_key(&mut self, key: KeyEvent) -> vrac_engine::Result<Action> {
         let editor_width = self.editor_width();
         let word_modifier = key
             .modifiers
@@ -1074,7 +1073,7 @@ impl App {
             .max(1)
     }
 
-    fn move_editor_to_adjacent(&mut self, direction: isize) -> vrac::Result<()> {
+    fn move_editor_to_adjacent(&mut self, direction: isize) -> vrac_engine::Result<()> {
         if self.editor.as_ref().is_some_and(|editor| {
             matches!(editor.target, EditTarget::New { .. }) && editor.text.is_empty()
         }) {
@@ -1117,7 +1116,7 @@ impl App {
         self.visible_nodes().iter().any(|item| item.node.id == id)
     }
 
-    fn move_selection(&mut self, direction: isize) -> vrac::Result<()> {
+    fn move_selection(&mut self, direction: isize) -> vrac_engine::Result<()> {
         if direction > 0 {
             self.load_next_page_at_selection()?;
         }
@@ -1137,7 +1136,7 @@ impl App {
         Ok(())
     }
 
-    fn move_selection_page(&mut self, direction: isize) -> vrac::Result<()> {
+    fn move_selection_page(&mut self, direction: isize) -> vrac_engine::Result<()> {
         let step = direction.signum();
         for _ in 0..direction.unsigned_abs() {
             let before = self.selected;
@@ -1149,7 +1148,7 @@ impl App {
         Ok(())
     }
 
-    fn load_next_page_at_selection(&mut self) -> vrac::Result<()> {
+    fn load_next_page_at_selection(&mut self) -> vrac_engine::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
@@ -1173,7 +1172,7 @@ impl App {
         };
     }
 
-    fn move_right(&mut self) -> vrac::Result<()> {
+    fn move_right(&mut self) -> vrac_engine::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
@@ -1193,7 +1192,7 @@ impl App {
         Ok(())
     }
 
-    fn move_left(&mut self) -> vrac::Result<()> {
+    fn move_left(&mut self) -> vrac_engine::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
@@ -1209,7 +1208,7 @@ impl App {
         Ok(())
     }
 
-    fn toggle_selected(&mut self) -> vrac::Result<()> {
+    fn toggle_selected(&mut self) -> vrac_engine::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
@@ -1222,7 +1221,7 @@ impl App {
         Ok(())
     }
 
-    fn expand(&mut self, id: NodeId) -> vrac::Result<()> {
+    fn expand(&mut self, id: NodeId) -> vrac_engine::Result<()> {
         if !self.branches.contains_key(&Some(id)) {
             self.reload_branch(Some(id))?;
         }
@@ -1230,14 +1229,14 @@ impl App {
         Ok(())
     }
 
-    fn start_launcher(&mut self, kind: LauncherKind) -> vrac::Result<()> {
+    fn start_launcher(&mut self, kind: LauncherKind) -> vrac_engine::Result<()> {
         self.launcher = Some(Launcher::new(kind));
         self.status.clear();
         self.scroll = 0;
         self.refresh_launcher()
     }
 
-    fn refresh_launcher(&mut self) -> vrac::Result<()> {
+    fn refresh_launcher(&mut self) -> vrac_engine::Result<()> {
         let launcher = self.launcher.as_ref().expect("launcher is active");
         let kind = launcher.kind;
         let query = launcher.text.clone();
@@ -1268,7 +1267,7 @@ impl App {
         Ok(())
     }
 
-    fn commit_launcher(&mut self) -> vrac::Result<Action> {
+    fn commit_launcher(&mut self) -> vrac_engine::Result<Action> {
         let item = self
             .launcher
             .as_ref()
@@ -1286,7 +1285,7 @@ impl App {
         }
     }
 
-    fn run_command(&mut self, command: Command) -> vrac::Result<Action> {
+    fn run_command(&mut self, command: Command) -> vrac_engine::Result<Action> {
         match command {
             Command::New => self.start_new_sibling(),
             Command::NewBefore => self.start_new_before(),
@@ -1320,7 +1319,7 @@ impl App {
         Ok(Action::Continue)
     }
 
-    fn start_tag_prompt(&mut self) -> vrac::Result<()> {
+    fn start_tag_prompt(&mut self) -> vrac_engine::Result<()> {
         let target_id = match self.selected {
             Some(id) => id,
             None => match self.focus {
@@ -1334,7 +1333,7 @@ impl App {
         self.open_tag_prompt(TagTarget::Node(target_id))
     }
 
-    fn open_tag_prompt(&mut self, target: TagTarget) -> vrac::Result<()> {
+    fn open_tag_prompt(&mut self, target: TagTarget) -> vrac_engine::Result<()> {
         let results = self.engine.tags("", 20)?;
         self.tag_prompt = Some(TagPrompt {
             target,
@@ -1347,7 +1346,7 @@ impl App {
         Ok(())
     }
 
-    fn refresh_tag_prompt(&mut self) -> vrac::Result<()> {
+    fn refresh_tag_prompt(&mut self) -> vrac_engine::Result<()> {
         let query = self
             .tag_prompt
             .as_ref()
@@ -1366,7 +1365,7 @@ impl App {
         Ok(())
     }
 
-    fn commit_tag_prompt(&mut self) -> vrac::Result<()> {
+    fn commit_tag_prompt(&mut self) -> vrac_engine::Result<()> {
         let Some(prompt) = self.tag_prompt.take() else {
             return Ok(());
         };
@@ -1379,7 +1378,7 @@ impl App {
             TagTarget::Node(id) => {
                 self.engine
                     .node(id)?
-                    .ok_or(vrac::Error::NodeNotFound(id))?
+                    .ok_or(vrac_engine::Error::NodeNotFound(id))?
                     .tags
             }
             TagTarget::Draft => self
@@ -1422,7 +1421,7 @@ impl App {
         Ok(())
     }
 
-    fn start_backlinks(&mut self) -> vrac::Result<()> {
+    fn start_backlinks(&mut self) -> vrac_engine::Result<()> {
         let target_id = match self.selected.or(self.focus) {
             Some(id) => id,
             None => {
@@ -1442,7 +1441,7 @@ impl App {
         Ok(())
     }
 
-    fn refresh_backlinks(&mut self) -> vrac::Result<()> {
+    fn refresh_backlinks(&mut self) -> vrac_engine::Result<()> {
         let Some(view) = self.backlinks.as_ref() else {
             return Ok(());
         };
@@ -1467,7 +1466,7 @@ impl App {
         Ok(())
     }
 
-    fn load_more_backlinks_if_needed(&mut self) -> vrac::Result<()> {
+    fn load_more_backlinks_if_needed(&mut self) -> vrac_engine::Result<()> {
         let Some(view) = self.backlinks.as_ref() else {
             return Ok(());
         };
@@ -1493,7 +1492,7 @@ impl App {
         Ok(())
     }
 
-    fn refresh_reference_prompt(&mut self) -> vrac::Result<()> {
+    fn refresh_reference_prompt(&mut self) -> vrac_engine::Result<()> {
         let query = self
             .reference_prompt
             .as_ref()
@@ -1605,7 +1604,7 @@ impl App {
         self.status.clear();
     }
 
-    fn create_sibling_from_editor(&mut self) -> vrac::Result<()> {
+    fn create_sibling_from_editor(&mut self) -> vrac_engine::Result<()> {
         if self.editor.as_ref().is_some_and(|editor| {
             matches!(editor.target, EditTarget::New { .. }) && editor.text.is_empty()
         }) {
@@ -1626,7 +1625,7 @@ impl App {
         Ok(())
     }
 
-    fn finish_editor(&mut self) -> vrac::Result<()> {
+    fn finish_editor(&mut self) -> vrac_engine::Result<()> {
         if self.editor.as_ref().is_some_and(|editor| {
             matches!(editor.target, EditTarget::New { .. }) && editor.text.is_empty()
         }) {
@@ -1639,7 +1638,7 @@ impl App {
         Ok(())
     }
 
-    fn zoom_from_editor(&mut self) -> vrac::Result<()> {
+    fn zoom_from_editor(&mut self) -> vrac_engine::Result<()> {
         if self.editor.as_ref().is_some_and(|editor| {
             matches!(editor.target, EditTarget::New { .. }) && editor.text.is_empty()
         }) {
@@ -1653,7 +1652,7 @@ impl App {
         Ok(())
     }
 
-    fn indent_editor(&mut self) -> vrac::Result<()> {
+    fn indent_editor(&mut self) -> vrac_engine::Result<()> {
         if self.adjust_new_draft(true)? {
             return Ok(());
         }
@@ -1668,7 +1667,7 @@ impl App {
         Ok(())
     }
 
-    fn outdent_editor(&mut self) -> vrac::Result<()> {
+    fn outdent_editor(&mut self) -> vrac_engine::Result<()> {
         if self.adjust_new_draft(false)? {
             return Ok(());
         }
@@ -1683,7 +1682,7 @@ impl App {
         Ok(())
     }
 
-    fn adjust_new_draft(&mut self, indent: bool) -> vrac::Result<bool> {
+    fn adjust_new_draft(&mut self, indent: bool) -> vrac_engine::Result<bool> {
         let Some(editor) = self.editor.as_ref() else {
             return Ok(false);
         };
@@ -1739,8 +1738,11 @@ impl App {
         Ok(true)
     }
 
-    fn resume_editing(&mut self, id: NodeId) -> vrac::Result<()> {
-        let node = self.engine.node(id)?.ok_or(vrac::Error::NodeNotFound(id))?;
+    fn resume_editing(&mut self, id: NodeId) -> vrac_engine::Result<()> {
+        let node = self
+            .engine
+            .node(id)?
+            .ok_or(vrac_engine::Error::NodeNotFound(id))?;
         let references = node
             .references
             .iter()
@@ -1760,7 +1762,7 @@ impl App {
         Ok(())
     }
 
-    fn indent_selected(&mut self) -> vrac::Result<()> {
+    fn indent_selected(&mut self) -> vrac_engine::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
@@ -1804,7 +1806,7 @@ impl App {
         Ok(())
     }
 
-    fn outdent_selected(&mut self) -> vrac::Result<()> {
+    fn outdent_selected(&mut self) -> vrac_engine::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
@@ -1819,7 +1821,7 @@ impl App {
         let parent = self
             .engine
             .node(parent_id)?
-            .ok_or(vrac::Error::NodeNotFound(parent_id))?;
+            .ok_or(vrac_engine::Error::NodeNotFound(parent_id))?;
         let destination_parent = parent.parent_id;
         self.engine.move_node(
             node.id,
@@ -1838,7 +1840,7 @@ impl App {
         Ok(())
     }
 
-    fn undo(&mut self) -> vrac::Result<()> {
+    fn undo(&mut self) -> vrac_engine::Result<()> {
         if self.engine.undo()? {
             self.reload_after_history()?;
             self.status = "Undone".into();
@@ -1848,7 +1850,7 @@ impl App {
         Ok(())
     }
 
-    fn redo(&mut self) -> vrac::Result<()> {
+    fn redo(&mut self) -> vrac_engine::Result<()> {
         if self.engine.redo()? {
             self.reload_after_history()?;
             self.status = "Redone".into();
@@ -1858,7 +1860,7 @@ impl App {
         Ok(())
     }
 
-    fn reload_after_history(&mut self) -> vrac::Result<()> {
+    fn reload_after_history(&mut self) -> vrac_engine::Result<()> {
         let focus = match self.focus {
             Some(id) if self.engine.node(id)?.is_some() => Some(id),
             _ => None,
@@ -1868,7 +1870,7 @@ impl App {
         self.set_focus(focus)
     }
 
-    fn reload_after_sync(&mut self) -> vrac::Result<()> {
+    fn reload_after_sync(&mut self) -> vrac_engine::Result<()> {
         let selected = self.selected;
         let open_branches = self
             .visible_nodes()
@@ -1944,7 +1946,7 @@ impl App {
         Ok(())
     }
 
-    fn copy_selected(&mut self) -> vrac::Result<()> {
+    fn copy_selected(&mut self) -> vrac_engine::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
@@ -1956,7 +1958,7 @@ impl App {
         Ok(())
     }
 
-    fn delete_selected(&mut self) -> vrac::Result<()> {
+    fn delete_selected(&mut self) -> vrac_engine::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
@@ -1994,7 +1996,7 @@ impl App {
         Ok(())
     }
 
-    fn paste_after_selected(&mut self) -> vrac::Result<()> {
+    fn paste_after_selected(&mut self) -> vrac_engine::Result<()> {
         let text = match Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
             Ok(text) => text,
             Err(error) => {
@@ -2022,7 +2024,7 @@ impl App {
         Ok(())
     }
 
-    fn refresh_cached_node(&mut self, id: NodeId) -> vrac::Result<()> {
+    fn refresh_cached_node(&mut self, id: NodeId) -> vrac_engine::Result<()> {
         let Some(updated) = self.engine.node(id)? else {
             return Ok(());
         };
@@ -2054,7 +2056,7 @@ impl App {
         }
     }
 
-    fn start_new_child(&mut self) -> vrac::Result<()> {
+    fn start_new_child(&mut self) -> vrac_engine::Result<()> {
         let Some(node) = self.selected_node() else {
             return Ok(());
         };
@@ -2069,11 +2071,11 @@ impl App {
         Ok(())
     }
 
-    fn commit_editor(&mut self) -> vrac::Result<Option<Node>> {
+    fn commit_editor(&mut self) -> vrac_engine::Result<Option<Node>> {
         let Some(editor) = self.editor.take() else {
             return Ok(None);
         };
-        let result = (|| -> vrac::Result<Option<Node>> {
+        let result = (|| -> vrac_engine::Result<Option<Node>> {
             match editor.target.clone() {
                 EditTarget::Existing(id) => {
                     let update = self.engine.set_content(
@@ -2081,7 +2083,10 @@ impl App {
                         editor.text.clone(),
                         editor.references.clone(),
                     )?;
-                    let updated = self.engine.node(id)?.ok_or(vrac::Error::NodeNotFound(id))?;
+                    let updated = self
+                        .engine
+                        .node(id)?
+                        .ok_or(vrac_engine::Error::NodeNotFound(id))?;
                     if !update.materialized_nodes.is_empty() || !update.pruned_roots.is_empty() {
                         self.reload_branch(None)?;
                     }
@@ -2337,7 +2342,7 @@ mod tests {
         let today = jiff::Zoned::now().date().to_string();
         assert!(matches!(
             app.focus_path.last().and_then(|node| node.system.as_ref()),
-            Some(vrac::SystemNode::JournalDay { date }) if date == &today
+            Some(vrac_engine::SystemNode::JournalDay { date }) if date == &today
         ));
     }
 
@@ -3365,7 +3370,7 @@ mod tests {
             .unwrap()
             .nodes
             .iter()
-            .find(|node| matches!(node.system, Some(vrac::SystemNode::Journal)))
+            .find(|node| matches!(node.system, Some(vrac_engine::SystemNode::Journal)))
             .unwrap()
             .id;
         app.selected = Some(journal);

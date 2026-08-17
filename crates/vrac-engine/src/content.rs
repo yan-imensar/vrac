@@ -23,7 +23,7 @@ impl Engine {
     /// # Example
     ///
     /// ```
-    /// use vrac::{CreateNode, Engine, ReferenceInput};
+    /// use vrac_engine::{CreateNode, Engine, ReferenceInput};
     ///
     /// let mut engine = Engine::open(":memory:")?;
     /// let target = engine.create_node(CreateNode::new("Project X"))?;
@@ -36,7 +36,7 @@ impl Engine {
     ///     target_id: target.id,
     /// }])?;
     /// assert_eq!(engine.node(source.id)?.unwrap().references[0].target_text, "Project X");
-    /// # Ok::<(), vrac::Error>(())
+    /// # Ok::<(), vrac_engine::Error>(())
     /// ```
     pub fn set_content(
         &mut self,

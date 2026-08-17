@@ -29,9 +29,9 @@ impl Engine {
     /// # Example
     ///
     /// ```
-    /// let engine = vrac::Engine::open(":memory:")?;
+    /// let engine = vrac_engine::Engine::open(":memory:")?;
     /// assert!(engine.check()?.is_ok());
-    /// # Ok::<(), vrac::Error>(())
+    /// # Ok::<(), vrac_engine::Error>(())
     /// ```
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::open_internal(path, None)

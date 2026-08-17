@@ -2,7 +2,7 @@ use std::error::Error as StdError;
 use std::fmt;
 use std::process::ExitCode;
 
-use vrac::{
+use vrac_engine::{
     CheckIssue, CreateNode, Destination, Engine, GenerateShape, MAX_PAGE_SIZE, Node, NodeId, Page,
     Placement,
 };
@@ -174,7 +174,9 @@ fn command_node(arguments: &[String]) -> Result<ExitCode, CliError> {
     expect_argument_count(arguments, 2, "node expects a file and an identifier")?;
     let id = parse_id(&arguments[1])?;
     let engine = Engine::open(&arguments[0])?;
-    let node = engine.node(id)?.ok_or(vrac::Error::NodeNotFound(id))?;
+    let node = engine
+        .node(id)?
+        .ok_or(vrac_engine::Error::NodeNotFound(id))?;
     print_node(&node);
     Ok(ExitCode::SUCCESS)
 }
@@ -492,7 +494,7 @@ fn parse_id(value: &str) -> Result<NodeId, CliError> {
 #[derive(Debug)]
 enum CliError {
     Usage(String),
-    Engine(vrac::Error),
+    Engine(vrac_engine::Error),
 }
 
 impl fmt::Display for CliError {
@@ -513,8 +515,8 @@ impl StdError for CliError {
     }
 }
 
-impl From<vrac::Error> for CliError {
-    fn from(error: vrac::Error) -> Self {
+impl From<vrac_engine::Error> for CliError {
+    fn from(error: vrac_engine::Error) -> Self {
         Self::Engine(error)
     }
 }
