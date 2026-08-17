@@ -1,20 +1,13 @@
 [package]
-name = "vrac"
+name = "vrac-workspace"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Fast local-first terminal outliner"
-
-[[bin]]
-name = "vrac"
-path = "src/main.rs"
-doc = false
+description = "Local workspace lifecycle and synchronization for Vrac clients"
 
 [dependencies]
 vrac-engine = { path = "../vrac-engine", version = "0.1.0" }
-vrac-tui = { path = "../vrac-tui", version = "0.1.0" }
 
 [dev-dependencies]
-libc = "0.2"
 tempfile = "3.27.0"

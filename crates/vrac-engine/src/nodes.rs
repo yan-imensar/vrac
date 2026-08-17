@@ -68,7 +68,7 @@ impl Engine {
     /// # Example
     ///
     /// ```
-    /// use vrac::{CreateNode, Engine, Page};
+    /// use vrac_engine::{CreateNode, Engine, Page};
     ///
     /// let mut engine = Engine::open(":memory:")?;
     /// engine.create_node(CreateNode::new("First"))?;
@@ -80,7 +80,7 @@ impl Engine {
     /// let second = second.nodes.into_iter().find(|node| node.system.is_none()).unwrap();
     /// assert_eq!(first.text, "First");
     /// assert_eq!(second.text, "Second");
-    /// # Ok::<(), vrac::Error>(())
+    /// # Ok::<(), vrac_engine::Error>(())
     /// ```
     pub fn children(&self, parent_id: Option<NodeId>, page: Page) -> Result<NodePage> {
         validate_page(page)?;

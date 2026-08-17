@@ -188,13 +188,15 @@ opens a specific workspace, and `vrac workspace` opens the folder selector.
 ## Repository layout
 
 ```text
-crates/vrac-engine   model, business rules, SQLite, sync, and checkpoints
-crates/vrac          public `vrac` binary and scriptable commands
-crates/vrac-tui      terminal interaction and rendering
+crates/vrac-engine      model, business rules, SQLite, and sync protocol
+crates/vrac-workspace   local DB lifecycle, provider layout, and sync rounds
+crates/vrac-tui         terminal interaction, transient view state, and rendering
+crates/vrac             public `vrac` binary and scriptable command routing
 ```
 
-The engine is synchronous and independent from every interface. The CLI and
-TUI contain no SQL or duplicated business rules.
+The engine is synchronous and independent from every interface. Workspace
+orchestration is reusable by terminal and future frontends. The CLI and TUI
+contain no SQL, provider-format knowledge, or duplicated business rules.
 
 The current workspace format is documented in [FORMAT.md](FORMAT.md). See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the branch, pull-request, and release

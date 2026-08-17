@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
-use vrac::{
+use vrac_engine::{
     CheckIssue, CreateNode, Destination, Engine, Error, JournalEntry, Node, NodeId, Page,
     Placement, ReferenceInput, SystemNode,
 };
@@ -354,7 +354,7 @@ fn backlinks_inherit_reference_context_downward_and_filter_by_tag() {
         engine
             .backlink_tags(archive.id, 20)
             .expect("read archive tag facets"),
-        [vrac::BacklinkTag {
+        [vrac_engine::BacklinkTag {
             tag: "task".into(),
             count: 3,
         }]
@@ -375,7 +375,7 @@ fn backlinks_inherit_reference_context_downward_and_filter_by_tag() {
         engine
             .backlink_tags(morgan.id, 20)
             .expect("read morgan tag facets"),
-        [vrac::BacklinkTag {
+        [vrac_engine::BacklinkTag {
             tag: "task".into(),
             count: 1,
         }]
@@ -769,7 +769,7 @@ fn removing_references_prunes_only_empty_unreferenced_roots() {
         engine
             .set_content(source.id, "Detached".into(), Vec::new())
             .expect("remove references"),
-        vrac::ContentUpdate {
+        vrac_engine::ContentUpdate {
             references: Vec::new(),
             materialized_nodes: Vec::new(),
             pruned_roots: vec![empty.id],

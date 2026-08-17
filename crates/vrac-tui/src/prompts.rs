@@ -1,6 +1,6 @@
 //! Transient state for bounded launchers and completion prompts.
 
-use vrac::{Cursor, Node, NodeId};
+use vrac_engine::{Cursor, Node, NodeId};
 
 use super::commands::CommandEntry;
 use super::editor::char_to_byte;

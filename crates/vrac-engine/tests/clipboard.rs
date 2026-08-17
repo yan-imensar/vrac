@@ -1,11 +1,11 @@
-use vrac::{CreateNode, Destination, Engine, Page, Placement};
+use vrac_engine::{CreateNode, Destination, Engine, Page, Placement};
 
 fn create(
     engine: &mut Engine,
-    parent_id: Option<vrac::NodeId>,
+    parent_id: Option<vrac_engine::NodeId>,
     text: &str,
     tags: &[&str],
-) -> vrac::Node {
+) -> vrac_engine::Node {
     let mut input = CreateNode::new(text);
     input.parent_id = parent_id;
     input.tags = tags.iter().map(|tag| (*tag).to_owned()).collect();

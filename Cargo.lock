@@ -1038,6 +1038,15 @@ dependencies = [
  "tempfile",
  "unicode-width",
  "vrac-engine",
+ "vrac-workspace",
+]
+
+[[package]]
+name = "vrac-workspace"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
+ "vrac-engine",
 ]
 
 [[package]]

@@ -3,7 +3,7 @@ use std::io::{self, Error as IoError};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use vrac::Engine;
+use vrac_engine::Engine;
 
 use super::ui::{content_width, draw_display_line, frame_lines, outline_height};
 use super::{App, LauncherKind};

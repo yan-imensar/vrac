@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
-use vrac::{
+use vrac_engine::{
     CheckIssue, CreateNode, Destination, Engine, Error, Page, Placement, ReferenceInput, SyncApply,
     SyncDeviceId, SystemNode,
 };
@@ -112,7 +112,7 @@ fn publish(engine: &mut Engine, provider: &Path) -> Vec<PathBuf> {
     published
 }
 
-fn synchronize(engine: &mut Engine, provider: &Path) -> vrac::Result<()> {
+fn synchronize(engine: &mut Engine, provider: &Path) -> vrac_engine::Result<()> {
     let mut packages: Vec<_> = std::fs::read_dir(provider)?
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<std::io::Result<_>>()?;

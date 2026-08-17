@@ -1,5 +1,10 @@
 [workspace]
-members = ["crates/vrac-engine", "crates/vrac", "crates/vrac-tui"]
+members = [
+    "crates/vrac-engine",
+    "crates/vrac-workspace",
+    "crates/vrac-tui",
+    "crates/vrac",
+]
 default-members = ["crates/vrac"]
 resolver = "3"
 

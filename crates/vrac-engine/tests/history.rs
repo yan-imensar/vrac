@@ -1,5 +1,5 @@
 use tempfile::tempdir;
-use vrac::{
+use vrac_engine::{
     CreateNode, Destination, Engine, Page, Placement, ReferenceInput, SyncApply, SyncDeviceId,
 };
 
@@ -266,7 +266,7 @@ fn pruning_a_detached_root_can_be_undone_redone_and_synchronized() {
         first
             .set_content(source.id, "Detached".into(), Vec::new())
             .expect("detach target"),
-        vrac::ContentUpdate {
+        vrac_engine::ContentUpdate {
             references: Vec::new(),
             materialized_nodes: Vec::new(),
             pruned_roots: vec![target.id],

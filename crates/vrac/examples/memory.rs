@@ -2,7 +2,7 @@ use std::error::Error as StdError;
 use std::io::{Error as IoError, ErrorKind};
 use std::path::PathBuf;
 
-use vrac::{Engine, Page, SystemNode};
+use vrac_engine::{Engine, Page, SystemNode};
 
 const ITERATIONS: usize = 1_000;
 const PAGE_SIZE: usize = 100;
@@ -76,10 +76,10 @@ fn main() -> Result<(), Box<dyn StdError>> {
 
 fn exercise_interactive_reads(
     engine: &Engine,
-    metadata_parent: vrac::NodeId,
-    deep_leaf: vrac::NodeId,
-    journal_day: vrac::NodeId,
-) -> vrac::Result<()> {
+    metadata_parent: vrac_engine::NodeId,
+    deep_leaf: vrac_engine::NodeId,
+    journal_day: vrac_engine::NodeId,
+) -> vrac_engine::Result<()> {
     std::hint::black_box(engine.children(
         None,
         Page {

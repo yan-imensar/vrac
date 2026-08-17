@@ -6,7 +6,7 @@
 //! # Example
 //!
 //! ```
-//! use vrac::{CreateNode, Engine, Page};
+//! use vrac_engine::{CreateNode, Engine, Page};
 //!
 //! let mut engine = Engine::open(":memory:")?;
 //! let meeting = engine.create_node(CreateNode::new("Meeting about project X"))?;
@@ -17,7 +17,7 @@
 //! let children = engine.children(Some(meeting.id), Page::default())?;
 //! assert_eq!(children.nodes.len(), 1);
 //! assert_eq!(children.nodes[0].text, "Ship the first version on Friday");
-//! # Ok::<(), vrac::Error>(())
+//! # Ok::<(), vrac_engine::Error>(())
 //! ```
 
 #![deny(missing_docs)]

@@ -5,7 +5,7 @@ use crossterm::queue;
 use crossterm::style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor};
 use crossterm::terminal::{self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-use vrac::{NodeId, Placement};
+use vrac_engine::{NodeId, Placement};
 
 use super::{
     App, BacklinkView, EditTarget, Editor, Launcher, LauncherItem, LauncherKind, OUTLINE_INDENT,
@@ -867,7 +867,7 @@ fn editor_text(editor: &Editor) -> String {
     format!("{}  {tags}", editor.text)
 }
 
-fn resolved_text(node: &vrac::Node) -> String {
+fn resolved_text(node: &vrac_engine::Node) -> String {
     if node.references.is_empty() {
         return node.text.clone();
     }
