@@ -97,7 +97,7 @@ no save command.
 
 | Key | Action |
 | --- | --- |
-| `j` / `k`, arrows | Move between bullets |
+| `j` / `k`, arrows | Move between bullets and contextual backlinks |
 | `h` / `l` | Parent or first child inside the current zoom |
 | `H` | Return to the parent zoom |
 | `Enter` | Focus the selected bullet |
@@ -105,7 +105,7 @@ no save command.
 | `gg` / `G` | First or last visible bullet |
 | `/` | Search nodes |
 | `:` | Open commands |
-| `b` | Open contextual backlinks |
+| `b` | Jump to contextual backlinks |
 | `#` | Toggle tags in normal mode |
 | `?` | Open keyboard help |
 
@@ -160,10 +160,15 @@ Terminal presentation preferences live in
 `$XDG_CONFIG_HOME/vrac/config.toml`, or `~/.config/vrac/config.toml` when
 `XDG_CONFIG_HOME` is unset. Windows uses `%APPDATA%\vrac\config.toml`.
 Vrac creates this file only after a setting changes. `:lines on` and
-`:lines off` show or hide hierarchy guides immediately and remember the choice:
+`:lines off` show or hide hierarchy guides immediately. Contextual backlinks
+appear below the focused outline by default; `j` and `k` cross naturally between
+the two areas, and `#` filters the backlink context by tag. `:backlinks off`
+hides the area until `b` reveals it temporarily, while `:backlinks on` restores
+the persistent view. Both choices are remembered:
 
 ```toml
 lines = true
+backlinks = true
 ```
 
 Independent changes merge; real conflicts stop atomically instead of silently

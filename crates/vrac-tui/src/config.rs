@@ -10,6 +10,7 @@ const FILE_NAME: &str = "config.toml";
 pub(crate) struct Config {
     path: PathBuf,
     pub(crate) lines: bool,
+    pub(crate) backlinks: bool,
 }
 
 impl Config {
@@ -21,7 +22,11 @@ impl Config {
         let contents = match fs::read_to_string(&path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(Self { path, lines: true });
+                return Ok(Self {
+                    path,
+                    lines: true,
+                    backlinks: true,
+                });
             }
             Err(error) => {
                 return Err(io::Error::new(
@@ -30,11 +35,27 @@ impl Config {
                 ));
             }
         };
-        let lines = parse(&path, &contents)?;
-        Ok(Self { path, lines })
+        let settings = parse(&path, &contents)?;
+        Ok(Self {
+            path,
+            lines: settings.lines,
+            backlinks: settings.backlinks,
+        })
     }
 
     pub(crate) fn set_lines(&mut self, enabled: bool) -> io::Result<()> {
+        self.persist(enabled, self.backlinks)?;
+        self.lines = enabled;
+        Ok(())
+    }
+
+    pub(crate) fn set_backlinks(&mut self, enabled: bool) -> io::Result<()> {
+        self.persist(self.lines, enabled)?;
+        self.backlinks = enabled;
+        Ok(())
+    }
+
+    fn persist(&self, lines: bool, backlinks: bool) -> io::Result<()> {
         let parent = self.path.parent().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -44,16 +65,23 @@ impl Config {
         fs::create_dir_all(parent)?;
 
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-        writeln!(temporary, "lines = {enabled}")?;
+        writeln!(temporary, "lines = {lines}")?;
+        writeln!(temporary, "backlinks = {backlinks}")?;
         temporary.as_file().sync_all()?;
         temporary.persist(&self.path).map_err(|error| error.error)?;
-        self.lines = enabled;
         Ok(())
     }
 }
 
-fn parse(path: &Path, contents: &str) -> io::Result<bool> {
+#[derive(Clone, Copy)]
+struct Settings {
+    lines: bool,
+    backlinks: bool,
+}
+
+fn parse(path: &Path, contents: &str) -> io::Result<Settings> {
     let mut lines = None;
+    let mut backlinks = None;
     for (index, raw_line) in contents.lines().enumerate() {
         let line_number = index + 1;
         let line = raw_line
@@ -67,33 +95,40 @@ fn parse(path: &Path, contents: &str) -> io::Result<bool> {
             .split_once('=')
             .ok_or_else(|| invalid_config(path, line_number, "expected `name = value`"))?;
         let key = key.trim();
-        if key != "lines" {
-            return Err(invalid_config(
-                path,
-                line_number,
-                &format!("unknown setting `{key}`"),
-            ));
-        }
-        if lines.is_some() {
-            return Err(invalid_config(
-                path,
-                line_number,
-                "`lines` is configured more than once",
-            ));
-        }
-        lines = Some(match value.trim() {
+        let setting = match key {
+            "lines" => &mut lines,
+            "backlinks" => &mut backlinks,
+            _ => {
+                return Err(invalid_config(
+                    path,
+                    line_number,
+                    &format!("unknown setting `{key}`"),
+                ));
+            }
+        };
+        let parsed = match value.trim() {
             "true" => true,
             "false" => false,
             _ => {
                 return Err(invalid_config(
                     path,
                     line_number,
-                    "`lines` must be `true` or `false`",
+                    &format!("`{key}` must be `true` or `false`"),
                 ));
             }
-        });
+        };
+        if setting.replace(parsed).is_some() {
+            return Err(invalid_config(
+                path,
+                line_number,
+                &format!("`{key}` is configured more than once"),
+            ));
+        }
     }
-    Ok(lines.unwrap_or(true))
+    Ok(Settings {
+        lines: lines.unwrap_or(true),
+        backlinks: backlinks.unwrap_or(true),
+    })
 }
 
 fn invalid_config(path: &Path, line: usize, message: &str) -> io::Error {
@@ -149,6 +184,7 @@ mod tests {
         let config = Config::load_from(path.clone()).unwrap();
 
         assert!(config.lines);
+        assert!(config.backlinks);
         assert!(!path.exists());
     }
 
@@ -156,9 +192,15 @@ mod tests {
     fn loads_comments_and_an_explicit_lines_value() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.toml");
-        std::fs::write(&path, "# Vrac presentation\nlines = false # compact\n").unwrap();
+        std::fs::write(
+            &path,
+            "# Vrac presentation\nlines = false # compact\nbacklinks = false\n",
+        )
+        .unwrap();
 
-        assert!(!Config::load_from(path).unwrap().lines);
+        let config = Config::load_from(path).unwrap();
+        assert!(!config.lines);
+        assert!(!config.backlinks);
     }
 
     #[test]
@@ -181,11 +223,22 @@ mod tests {
         let mut config = Config::load_from(path.clone()).unwrap();
 
         config.set_lines(false).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "lines = false\n");
-        assert!(!Config::load_from(path.clone()).unwrap().lines);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "lines = false\nbacklinks = true\n"
+        );
+        let loaded = Config::load_from(path.clone()).unwrap();
+        assert!(!loaded.lines);
+        assert!(loaded.backlinks);
 
+        config.set_backlinks(false).unwrap();
         config.set_lines(true).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "lines = true\n");
-        assert!(Config::load_from(path).unwrap().lines);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "lines = true\nbacklinks = false\n"
+        );
+        let loaded = Config::load_from(path).unwrap();
+        assert!(loaded.lines);
+        assert!(!loaded.backlinks);
     }
 }

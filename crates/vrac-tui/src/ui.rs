@@ -11,7 +11,8 @@ use super::OUTLINE_INDENT;
 use super::editor::{EditTarget, Editor};
 use super::model::{App, VisibleNode};
 use super::prompts::{
-    BacklinkView, Launcher, LauncherItem, LauncherKind, ReferencePrompt, TagPrompt,
+    BacklinkFilterPrompt, BacklinkView, Launcher, LauncherItem, LauncherKind, ReferencePrompt,
+    TagPrompt,
 };
 
 const CONTENT_LEFT: usize = 2;
@@ -50,11 +51,18 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
         queue!(
             stdout,
             MoveTo(content_column, u16::try_from(TITLE_ROW).unwrap_or(0)),
+            SetForegroundColor(Color::Cyan),
+            SetAttribute(Attribute::Bold),
+            Print("vrac"),
+            SetAttribute(Attribute::Reset),
             SetForegroundColor(Color::DarkGrey)
         )?;
         queue!(
             stdout,
-            Print(fit(&app.focus_label(), content_width)),
+            Print(fit(
+                &format!("  {}", app.focus_label()),
+                content_width.saturating_sub(4)
+            )),
             ResetColor
         )?;
     }
@@ -90,8 +98,8 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
 
     if app.help {
         draw_help_footer(stdout, content_column, content_width, height)?;
-    } else if app.backlinks.is_some() {
-        draw_backlink_footer(stdout, &app.status, content_column, content_width, height)?;
+    } else if let Some(prompt) = &app.backlink_filter {
+        draw_backlink_filter_footer(stdout, prompt, content_column, content_width, height)?;
     } else if let Some(prompt) = &app.tag_prompt {
         draw_tag_footer(
             stdout,
@@ -134,6 +142,12 @@ pub(super) fn draw(stdout: &mut Stdout, app: &mut App) -> io::Result<()> {
                 )
             )?;
         }
+    } else if app
+        .backlinks
+        .as_ref()
+        .is_some_and(|view| view.selected.is_some())
+    {
+        draw_backlink_footer(stdout, app, content_column, content_width, height)?;
     } else {
         draw_normal_footer(stdout, &app.status, content_column, content_width, height)?;
     }
@@ -151,11 +165,17 @@ pub(super) fn outline_height(total_height: usize, completion_height: usize) -> u
 }
 
 pub(super) fn frame_lines(app: &mut App, width: usize, body_height: usize) -> Vec<DisplayLine> {
-    let lines = match (app.help, &app.backlinks, &app.launcher) {
-        (true, _, _) => help_lines(),
-        (false, Some(view), _) => backlink_lines(view, width),
-        (false, None, Some(launcher)) => launcher_lines(launcher, width),
-        (false, None, None) => display_lines(app, width),
+    let lines = match (app.help, &app.launcher) {
+        (true, _) => help_lines(),
+        (false, Some(launcher)) => launcher_lines(launcher, width),
+        (false, None) => {
+            let mut lines = display_lines(app, width);
+            if let Some(view) = &app.backlinks {
+                lines.push(blank_line());
+                lines.extend(backlink_lines(view, width));
+            }
+            lines
+        }
     };
     let selected_start = lines
         .iter()
@@ -287,7 +307,7 @@ pub(super) fn draw_inline_content<W: Write>(
 }
 
 fn completion_height(app: &App, height: usize) -> usize {
-    if app.tag_prompt.is_none() && app.reference_prompt.is_none() {
+    if app.tag_prompt.is_none() && app.reference_prompt.is_none() && app.backlink_filter.is_none() {
         return 0;
     }
     6.min(height.saturating_sub(BODY_START + FOOTER_HEIGHT + 1))
@@ -304,7 +324,16 @@ fn draw_completion_panel(
     if height == 0 {
         return Ok(());
     }
-    let (title, options, selected) = if let Some(prompt) = &app.tag_prompt {
+    let (title, options, selected) = if let Some(prompt) = &app.backlink_filter {
+        let mut options = vec!["all backlinks".into()];
+        options.extend(
+            prompt
+                .results
+                .iter()
+                .map(|tag| format!("#{}  {}", tag.tag, tag.count)),
+        );
+        ("BACKLINK FILTER", options, prompt.selected)
+    } else if let Some(prompt) = &app.tag_prompt {
         (
             "TAGS",
             if prompt.results.is_empty() {
@@ -418,16 +447,16 @@ fn draw_reference_footer(
 
 fn draw_backlink_footer(
     stdout: &mut Stdout,
-    status: &str,
+    app: &App,
     left: u16,
     width: usize,
     height: usize,
 ) -> io::Result<()> {
     if height >= 2 {
-        let label = if status.is_empty() {
-            "BACKLINKS  j/k select · Enter open · b/Esc close"
+        let label = if app.status.is_empty() {
+            "CONTEXT  j/k move · Enter open · # filter · b/Esc outline"
         } else {
-            status
+            &app.status
         };
         queue!(stdout, MoveTo(left, u16::try_from(height - 2).unwrap_or(0)))?;
         queue!(
@@ -438,12 +467,61 @@ fn draw_backlink_footer(
         )?;
     }
     if height >= 1 {
+        let filter = app
+            .backlinks
+            .as_ref()
+            .and_then(|view| view.filter.as_deref())
+            .map_or("all backlinks".into(), |tag| format!("showing #{tag}"));
         queue!(stdout, MoveTo(left, u16::try_from(height - 1).unwrap_or(0)))?;
         queue!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
-            Print(fit("Context paths are newest Journal day first", width)),
+            Print(fit(&filter, width)),
             ResetColor
+        )?;
+    }
+    Ok(())
+}
+
+fn draw_backlink_filter_footer(
+    stdout: &mut Stdout,
+    prompt: &BacklinkFilterPrompt,
+    left: u16,
+    width: usize,
+    height: usize,
+) -> io::Result<()> {
+    if height >= 2 {
+        queue!(stdout, MoveTo(left, u16::try_from(height - 2).unwrap_or(0)))?;
+        queue!(
+            stdout,
+            SetForegroundColor(Color::Yellow),
+            Print(fit(
+                "FILTER BACKLINKS  ↑/↓ select · Enter apply · Esc cancel",
+                width
+            )),
+            ResetColor
+        )?;
+    }
+    if height >= 1 {
+        let input_width = width.saturating_sub(2);
+        let query = fit(&prompt.query, input_width);
+        queue!(stdout, MoveTo(left, u16::try_from(height - 1).unwrap_or(0)))?;
+        queue!(
+            stdout,
+            SetForegroundColor(Color::Cyan),
+            Print("# "),
+            ResetColor,
+            Print(&query),
+            Show
+        )?;
+        let column = usize::from(left)
+            + (2 + UnicodeWidthStr::width(query.as_str())).min(width.saturating_sub(1));
+        queue!(
+            stdout,
+            MoveTo(
+                u16::try_from(column).unwrap_or(u16::MAX),
+                u16::try_from(height - 1).unwrap_or(0)
+            )
         )?;
     }
     Ok(())
@@ -519,7 +597,10 @@ fn draw_normal_footer(
         queue!(
             stdout,
             SetForegroundColor(Color::DarkGrey),
-            Print(fit("? help", width)),
+            Print(fit(
+                "NORMAL  j/k move · Enter open · b context · # tags · ? help",
+                width
+            )),
             ResetColor
         )?;
     }
@@ -559,7 +640,8 @@ fn help_lines() -> Vec<DisplayLine> {
         "    /                search notes",
         "    :                commands",
         "    # / [[           tags / references while editing",
-        "    b                backlinks",
+        "    b                jump to contextual backlinks",
+        "    # in backlinks   filter context by tag",
         "    q / Ctrl-C       quit",
     ]
     .into_iter()
@@ -661,6 +743,10 @@ fn draw_editor_status(
 
 pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
     let visible = app.visible_nodes();
+    let backlink_selected = app
+        .backlinks
+        .as_ref()
+        .is_some_and(|view| view.selected.is_some());
     let draft_active = app
         .editor
         .as_ref()
@@ -683,7 +769,7 @@ pub(super) fn display_lines(app: &App, width: usize) -> Vec<DisplayLine> {
         let Some(item) = visible.get(index) else {
             continue;
         };
-        let selected = !draft_active && app.selected == Some(item.node.id);
+        let selected = !draft_active && !backlink_selected && app.selected == Some(item.node.id);
         let selector = if selected { "› " } else { "  " };
         let indent = guide_prefix(item.depth, app.lines);
         let marker = if item.node.has_children {
@@ -983,35 +1069,57 @@ fn launcher_lines(launcher: &Launcher, width: usize) -> Vec<DisplayLine> {
 }
 
 fn backlink_lines(view: &BacklinkView, width: usize) -> Vec<DisplayLine> {
+    let facets = view
+        .tags
+        .iter()
+        .take(4)
+        .map(|tag| format!("#{} {}", tag.tag, tag.count))
+        .collect::<Vec<_>>()
+        .join("   ");
+    let active = view
+        .filter
+        .as_ref()
+        .map_or("all".into(), |tag| format!("#{tag}"));
+    let mut lines = vec![DisplayLine {
+        selected: false,
+        text: fit(
+            &if facets.is_empty() {
+                format!("  ── backlinks  ·  {active}")
+            } else {
+                format!("  ── backlinks  ·  {active}   {facets}")
+            },
+            width,
+        ),
+        cursor: None,
+        content_start: 2,
+    }];
     if view.contexts.is_empty() {
-        return vec![DisplayLine {
+        lines.push(DisplayLine {
             selected: false,
             text: "  No backlinks".into(),
             cursor: None,
             content_start: 2,
-        }];
+        });
+        return lines;
     }
-    view.contexts
-        .iter()
-        .enumerate()
-        .map(|(index, path)| {
-            let selected = index == view.selected;
-            let context = path
-                .iter()
-                .map(|node| resolved_text(node).replace('\n', " "))
-                .collect::<Vec<_>>()
-                .join(" › ");
-            DisplayLine {
-                selected,
-                text: fit(
-                    &format!("{}{}", if selected { "› " } else { "  " }, context),
-                    width,
-                ),
-                cursor: None,
-                content_start: if selected { "› ".len() } else { 2 },
-            }
-        })
-        .collect()
+    lines.extend(view.contexts.iter().enumerate().map(|(index, path)| {
+        let selected = view.selected == Some(index);
+        let context = path
+            .iter()
+            .map(|node| resolved_text(node).replace('\n', " "))
+            .collect::<Vec<_>>()
+            .join(" › ");
+        DisplayLine {
+            selected,
+            text: fit(
+                &format!("{}{}", if selected { "› " } else { "  " }, context),
+                width,
+            ),
+            cursor: None,
+            content_start: if selected { "› ".len() } else { 2 },
+        }
+    }));
+    lines
 }
 
 pub(super) fn wrap_text(text: &str, width: usize) -> Vec<String> {

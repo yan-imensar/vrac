@@ -128,11 +128,16 @@ impl App {
         };
         let target_id = view.target_id;
         let selected = view.selected;
+        let filter = view.filter.clone();
+        let temporary = view.temporary;
         if self.engine.node(target_id)?.is_none() {
             self.backlinks = None;
             return Ok(());
         }
-        let page = self.engine.backlinks(target_id, None, Page::default())?;
+        let tags = self.engine.backlink_tags(target_id, 100)?;
+        let page = self
+            .engine
+            .backlinks(target_id, filter.as_deref(), Page::default())?;
         let contexts = page
             .contexts
             .into_iter()
@@ -140,27 +145,91 @@ impl App {
             .collect::<Vec<_>>();
         self.backlinks = Some(BacklinkView {
             target_id,
-            selected: selected.min(contexts.len().saturating_sub(1)),
+            tags,
+            filter,
+            selected: selected
+                .filter(|_| !contexts.is_empty())
+                .map(|selected| selected.min(contexts.len() - 1)),
             contexts,
             next: page.next,
+            temporary,
         });
         Ok(())
+    }
+
+    pub(super) fn refresh_contextual_backlinks(
+        &mut self,
+        temporary: bool,
+    ) -> vrac_engine::Result<()> {
+        let target_id = if temporary {
+            self.focus.or(self.selected)
+        } else if self.backlinks_visible {
+            self.focus
+        } else {
+            None
+        };
+        let Some(target_id) = target_id else {
+            self.backlinks = None;
+            self.backlink_filter = None;
+            return Ok(());
+        };
+        self.backlinks = Some(BacklinkView {
+            target_id,
+            tags: Vec::new(),
+            filter: None,
+            contexts: Vec::new(),
+            next: None,
+            selected: None,
+            temporary,
+        });
+        self.refresh_backlinks()
+    }
+
+    pub(super) fn set_backlinks_visible(&mut self, enabled: bool) -> vrac_engine::Result<()> {
+        self.backlinks_visible = enabled;
+        self.backlink_filter = None;
+        self.refresh_contextual_backlinks(false)
+    }
+
+    pub(super) fn refresh_backlink_filter(&mut self) {
+        let Some(prompt) = self.backlink_filter.as_ref() else {
+            return;
+        };
+        let normalized = prompt.query.trim().trim_start_matches('#').to_lowercase();
+        let results = self
+            .backlinks
+            .as_ref()
+            .into_iter()
+            .flat_map(|view| &view.tags)
+            .filter(|tag| normalized.is_empty() || tag.tag.contains(&normalized))
+            .cloned()
+            .collect();
+        let prompt = self
+            .backlink_filter
+            .as_mut()
+            .expect("backlink filter is active");
+        prompt.results = results;
+        prompt.selected = prompt.selected.min(prompt.results.len());
     }
 
     pub(super) fn load_more_backlinks_if_needed(&mut self) -> vrac_engine::Result<()> {
         let Some(view) = self.backlinks.as_ref() else {
             return Ok(());
         };
-        if view.selected + 1 < view.contexts.len() {
+        let Some(selected) = view.selected else {
+            return Ok(());
+        };
+        if selected + 1 < view.contexts.len() {
             return Ok(());
         }
         let Some(after) = view.next else {
             return Ok(());
         };
         let target_id = view.target_id;
+        let filter = view.filter.clone();
         let page = self.engine.backlinks(
             target_id,
-            None,
+            filter.as_deref(),
             Page {
                 limit: Page::default().limit,
                 after: Some(after),
@@ -203,6 +272,7 @@ impl App {
 
     pub(super) fn reload_after_sync(&mut self) -> vrac_engine::Result<()> {
         let selected = self.selected;
+        let backlinks = self.backlinks.clone();
         let open_branches = self
             .visible_nodes()
             .into_iter()
@@ -261,6 +331,12 @@ impl App {
         }) {
             self.selected = selected;
         }
+        if let Some(view) = backlinks
+            && self.engine.node(view.target_id)?.is_some()
+            && (view.temporary || self.focus == Some(view.target_id))
+        {
+            self.backlinks = Some(view);
+        }
         if self.launcher.is_some() {
             self.refresh_launcher()?;
         }
@@ -299,6 +375,20 @@ impl App {
                 for reference in &mut node.references {
                     if reference.target_id == updated.id {
                         reference.target_text.clone_from(&updated.text);
+                    }
+                }
+            }
+        }
+        if let Some(view) = &mut self.backlinks {
+            for path in &mut view.contexts {
+                for node in path {
+                    if node.id == updated.id {
+                        *node = updated.clone();
+                    }
+                    for reference in &mut node.references {
+                        if reference.target_id == updated.id {
+                            reference.target_text.clone_from(&updated.text);
+                        }
                     }
                 }
             }

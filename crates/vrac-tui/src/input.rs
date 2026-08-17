@@ -7,7 +7,8 @@ use super::commands::Command;
 use super::editor::{EditTarget, char_to_byte};
 use super::model::{Action, App};
 use super::prompts::{
-    BacklinkView, Launcher, LauncherItem, LauncherKind, ReferencePrompt, TagPrompt, TagTarget,
+    BacklinkFilterPrompt, Launcher, LauncherItem, LauncherKind, ReferencePrompt, TagPrompt,
+    TagTarget,
 };
 
 impl App {
@@ -24,8 +25,8 @@ impl App {
             Ok(Action::Continue)
         } else if self.reference_prompt.is_some() {
             self.handle_reference_key(key)
-        } else if self.backlinks.is_some() {
-            self.handle_backlink_key(key)
+        } else if self.backlink_filter.is_some() {
+            self.handle_backlink_filter_key(key)
         } else if self.tag_prompt.is_some() {
             self.handle_tag_key(key)
         } else if self.launcher.is_some() {
@@ -55,6 +56,13 @@ impl App {
                 prompt.query.push_str(&pasted);
                 self.refresh_reference_prompt()?;
             }
+        } else if let Some(prompt) = &mut self.backlink_filter {
+            prompt.query.extend(
+                pasted
+                    .chars()
+                    .filter(|character| !character.is_whitespace() && *character != '#'),
+            );
+            self.refresh_backlink_filter();
         } else if let Some(prompt) = &mut self.tag_prompt {
             prompt.query.extend(
                 pasted
@@ -74,6 +82,13 @@ impl App {
     }
 
     pub(super) fn handle_normal_key(&mut self, key: KeyEvent) -> vrac_engine::Result<Action> {
+        if self
+            .backlinks
+            .as_ref()
+            .is_some_and(|view| view.selected.is_some())
+        {
+            return self.handle_backlink_key(key);
+        }
         if let Some(pending) = self.pending_key.take() {
             self.status.clear();
             if key.code == KeyCode::Char(pending) {
@@ -245,30 +260,84 @@ impl App {
     pub(super) fn handle_backlink_key(&mut self, key: KeyEvent) -> vrac_engine::Result<Action> {
         match key.code {
             KeyCode::Esc | KeyCode::Char('b') => {
-                self.backlinks = None;
+                let temporary = self.backlinks.as_ref().is_some_and(|view| view.temporary);
+                if temporary {
+                    self.backlinks = None;
+                } else if let Some(view) = &mut self.backlinks {
+                    view.selected = None;
+                }
                 self.status.clear();
-                self.scroll = 0;
             }
             KeyCode::Enter => {
                 let target = self.backlinks.as_ref().and_then(|view| {
+                    let selected = view.selected?;
                     view.contexts
-                        .get(view.selected)
+                        .get(selected)
                         .and_then(|path| path.last())
                         .map(|node| node.id)
                 });
-                self.backlinks = None;
                 if let Some(target) = target {
                     self.set_focus(Some(target))?;
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                let view = self.backlinks.as_mut().expect("backlinks are active");
-                view.selected = view.selected.saturating_sub(1);
+            KeyCode::Up | KeyCode::Char('k') => self.move_selection(-1)?,
+            KeyCode::Down | KeyCode::Char('j') => self.move_selection(1)?,
+            KeyCode::PageUp => self.move_selection_page(-10)?,
+            KeyCode::PageDown => self.move_selection_page(10)?,
+            KeyCode::Char('#') => self.open_backlink_filter(),
+            KeyCode::Char('/') => self.start_launcher(LauncherKind::Search)?,
+            KeyCode::Char(':') => self.start_launcher(LauncherKind::Commands)?,
+            KeyCode::Char('?') => {
+                self.help = true;
+                self.scroll = 0;
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.load_more_backlinks_if_needed()?;
-                let view = self.backlinks.as_mut().expect("backlinks are active");
-                view.selected = (view.selected + 1).min(view.contexts.len().saturating_sub(1));
+            KeyCode::Char('q') => return Ok(Action::Quit),
+            _ => {}
+        }
+        Ok(Action::Continue)
+    }
+
+    pub(super) fn handle_backlink_filter_key(
+        &mut self,
+        key: KeyEvent,
+    ) -> vrac_engine::Result<Action> {
+        match key.code {
+            KeyCode::Esc => self.backlink_filter = None,
+            KeyCode::Enter | KeyCode::Tab => self.commit_backlink_filter()?,
+            KeyCode::Up => {
+                let prompt = self
+                    .backlink_filter
+                    .as_mut()
+                    .expect("backlink filter is active");
+                prompt.selected = prompt.selected.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                let prompt = self
+                    .backlink_filter
+                    .as_mut()
+                    .expect("backlink filter is active");
+                prompt.selected = (prompt.selected + 1).min(prompt.results.len());
+            }
+            KeyCode::Backspace => {
+                let prompt = self
+                    .backlink_filter
+                    .as_mut()
+                    .expect("backlink filter is active");
+                prompt.query.pop();
+                self.refresh_backlink_filter();
+            }
+            KeyCode::Char(character)
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
+                ) && !character.is_whitespace()
+                    && character != '#' =>
+            {
+                self.backlink_filter
+                    .as_mut()
+                    .expect("backlink filter is active")
+                    .query
+                    .push(character);
+                self.refresh_backlink_filter();
             }
             _ => {}
         }
@@ -527,6 +596,8 @@ impl App {
             Command::Redo => self.redo()?,
             Command::Tag => self.start_tag_prompt()?,
             Command::Backlinks => self.start_backlinks()?,
+            Command::BacklinksOn => return Ok(Action::SetBacklinks(true)),
+            Command::BacklinksOff => return Ok(Action::SetBacklinks(false)),
             Command::LinesOn => return Ok(Action::SetLines(true)),
             Command::LinesOff => return Ok(Action::SetLines(false)),
             Command::Sync => return Ok(Action::Sync),
@@ -600,6 +671,7 @@ impl App {
                     return Err(error);
                 }
                 self.refresh_cached_node(id)?;
+                self.refresh_backlinks()?;
                 if let Some(editor) = &mut self.editor {
                     editor.tags = tags;
                 }
@@ -620,22 +692,73 @@ impl App {
     }
 
     pub(super) fn start_backlinks(&mut self) -> vrac_engine::Result<()> {
-        let target_id = match self.selected.or(self.focus) {
+        let target_id = match self.focus.or(self.selected) {
             Some(id) => id,
             None => {
                 self.status = "No node is selected".into();
                 return Ok(());
             }
         };
-        self.backlinks = Some(BacklinkView {
-            target_id,
-            contexts: Vec::new(),
-            next: None,
-            selected: 0,
-        });
-        self.refresh_backlinks()?;
+        if self
+            .backlinks
+            .as_ref()
+            .is_none_or(|view| view.target_id != target_id)
+        {
+            self.refresh_contextual_backlinks(self.focus.is_none() || !self.backlinks_visible)?;
+        }
+        let Some(view) = &mut self.backlinks else {
+            return Ok(());
+        };
+        if view.contexts.is_empty() {
+            self.status = "No contextual backlinks".into();
+            return Ok(());
+        }
+        view.selected = Some(0);
         self.status.clear();
-        self.scroll = 0;
+        Ok(())
+    }
+
+    pub(super) fn open_backlink_filter(&mut self) {
+        let Some(view) = &self.backlinks else {
+            return;
+        };
+        let selected = view
+            .filter
+            .as_ref()
+            .and_then(|active| view.tags.iter().position(|tag| &tag.tag == active))
+            .map_or(0, |index| index + 1);
+        self.backlink_filter = Some(BacklinkFilterPrompt {
+            query: String::new(),
+            results: view.tags.clone(),
+            selected,
+        });
+        self.status.clear();
+    }
+
+    pub(super) fn commit_backlink_filter(&mut self) -> vrac_engine::Result<()> {
+        let Some(prompt) = self.backlink_filter.take() else {
+            return Ok(());
+        };
+        let filter = if prompt.selected == 0 {
+            None
+        } else {
+            prompt
+                .results
+                .get(prompt.selected - 1)
+                .map(|tag| tag.tag.clone())
+        };
+        let Some(view) = &mut self.backlinks else {
+            return Ok(());
+        };
+        view.filter = filter;
+        view.selected = Some(0);
+        self.refresh_backlinks()?;
+        if let Some(view) = &mut self.backlinks
+            && view.contexts.is_empty()
+        {
+            view.selected = None;
+        }
+        self.status.clear();
         Ok(())
     }
 

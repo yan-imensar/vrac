@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use vrac_engine::{Cursor, Engine, Node, NodeId};
 
 use super::editor::Editor;
-use super::prompts::{BacklinkView, Launcher, ReferencePrompt, TagPrompt};
+use super::prompts::{BacklinkFilterPrompt, BacklinkView, Launcher, ReferencePrompt, TagPrompt};
 
 #[derive(Clone)]
 pub(super) struct Branch {
@@ -25,6 +25,7 @@ pub(super) enum Action {
     Sync,
     ChooseWorkspace,
     SetLines(bool),
+    SetBacklinks(bool),
     Quit,
 }
 
@@ -45,33 +46,45 @@ pub(super) struct App {
     pub(super) launcher: Option<Launcher>,
     pub(super) tag_prompt: Option<TagPrompt>,
     pub(super) backlinks: Option<BacklinkView>,
+    pub(super) backlink_filter: Option<BacklinkFilterPrompt>,
     pub(super) reference_prompt: Option<ReferencePrompt>,
     pub(super) help: bool,
     pub(super) pending_key: Option<char>,
     pub(super) status: String,
     pub(super) lines: bool,
+    pub(super) backlinks_visible: bool,
     pub(super) scroll: usize,
     pub(super) viewport_width: usize,
 }
 
 impl App {
-    pub(super) fn open_with_lines(mut engine: Engine, lines: bool) -> vrac_engine::Result<Self> {
+    #[cfg(test)]
+    pub(super) fn open_with_lines(engine: Engine, lines: bool) -> vrac_engine::Result<Self> {
+        Self::open_with_settings(engine, lines, true)
+    }
+
+    pub(super) fn open_with_settings(
+        mut engine: Engine,
+        lines: bool,
+        backlinks_visible: bool,
+    ) -> vrac_engine::Result<Self> {
         let today = jiff::Zoned::now().date().to_string();
         let day = engine.journal_day(&today)?;
-        Self::open_with_focus_and_lines(engine, Some(day.id), lines)
+        Self::open_with_presentation(engine, Some(day.id), lines, backlinks_visible)
     }
 
     pub(super) fn open_with_focus(
         engine: Engine,
         focus: Option<NodeId>,
     ) -> vrac_engine::Result<Self> {
-        Self::open_with_focus_and_lines(engine, focus, true)
+        Self::open_with_presentation(engine, focus, true, true)
     }
 
-    pub(super) fn open_with_focus_and_lines(
+    pub(super) fn open_with_presentation(
         engine: Engine,
         focus: Option<NodeId>,
         lines: bool,
+        backlinks_visible: bool,
     ) -> vrac_engine::Result<Self> {
         let mut app = Self {
             engine,
@@ -84,11 +97,13 @@ impl App {
             launcher: None,
             tag_prompt: None,
             backlinks: None,
+            backlink_filter: None,
             reference_prompt: None,
             help: false,
             pending_key: None,
             status: String::new(),
             lines,
+            backlinks_visible,
             scroll: 0,
             viewport_width: 80,
         };
@@ -102,6 +117,7 @@ impl App {
             .get(&focus)
             .and_then(|branch| branch.nodes.first())
             .map(|node| node.id);
+        app.refresh_contextual_backlinks(false)?;
         Ok(app)
     }
 

@@ -10,7 +10,7 @@ use super::editor::{EditTarget, Editor};
 use super::model::{Action, App};
 use super::prompts::{LauncherItem, LauncherKind, TagTarget};
 use super::session::{actionable_key, choose_workspace_folder, open_workspace};
-use super::ui::{display_lines, draw_inline_content, split_content, wrap_text};
+use super::ui::{display_lines, draw_inline_content, frame_lines, split_content, wrap_text};
 
 #[test]
 fn absolute_workspace_arguments_are_kept() {
@@ -460,6 +460,148 @@ fn backlinks_open_the_matching_context() {
     app.handle_backlink_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
         .unwrap();
     assert_eq!(app.focus, Some(source.id));
+}
+
+fn contextual_backlink_app(backlinks_visible: bool) -> (App, Node, Node, Node) {
+    let mut engine = Engine::open(":memory:").unwrap();
+    let project = engine
+        .create_node(CreateNode::new("Northstar"))
+        .unwrap()
+        .node;
+    let outline = {
+        let mut input = CreateNode::new("Project outline");
+        input.parent_id = Some(project.id);
+        engine.create_node(input).unwrap().node
+    };
+    let meeting = engine
+        .create_node(CreateNode::new("Meeting about [[Northstar]]"))
+        .unwrap()
+        .node;
+    let task = {
+        let mut input = CreateNode::new("Call Alice");
+        input.parent_id = Some(meeting.id);
+        input.tags = vec!["task".into()];
+        engine.create_node(input).unwrap().node
+    };
+    let app =
+        App::open_with_presentation(engine, Some(project.id), true, backlinks_visible).unwrap();
+    (app, outline, meeting, task)
+}
+
+#[test]
+fn focused_nodes_render_contextual_backlinks_below_the_outline() {
+    let (mut app, outline, meeting, _) = contextual_backlink_app(true);
+
+    let lines = frame_lines(&mut app, 100, 30);
+    let outline_line = lines
+        .iter()
+        .position(|line| line.text.contains(&outline.text))
+        .unwrap();
+    let heading = lines
+        .iter()
+        .position(|line| line.text.contains("backlinks"))
+        .unwrap();
+    let context = lines
+        .iter()
+        .position(|line| line.text.contains(&meeting.text))
+        .unwrap();
+
+    assert!(outline_line < heading);
+    assert!(heading < context);
+    assert!(lines[heading].text.contains("#task 1"));
+}
+
+#[test]
+fn vertical_navigation_crosses_outline_and_backlink_boundaries() {
+    let (mut app, outline, meeting, _) = contextual_backlink_app(true);
+    assert_eq!(app.selected, Some(outline.id));
+    assert_eq!(app.backlinks.as_ref().unwrap().selected, None);
+
+    app.move_selection(1).unwrap();
+    assert_eq!(app.selected, Some(outline.id));
+    assert_eq!(app.backlinks.as_ref().unwrap().selected, Some(0));
+    assert_eq!(
+        app.backlinks.as_ref().unwrap().contexts[0]
+            .last()
+            .unwrap()
+            .id,
+        meeting.id
+    );
+
+    app.move_selection(-1).unwrap();
+    assert_eq!(app.selected, Some(outline.id));
+    assert_eq!(app.backlinks.as_ref().unwrap().selected, None);
+}
+
+#[test]
+fn backlink_filters_select_tagged_descendants_with_their_context() {
+    let (mut app, _, meeting, task) = contextual_backlink_app(true);
+    app.start_backlinks().unwrap();
+    app.open_backlink_filter();
+    let task_choice = app
+        .backlink_filter
+        .as_ref()
+        .unwrap()
+        .results
+        .iter()
+        .position(|tag| tag.tag == "task")
+        .unwrap()
+        + 1;
+    app.backlink_filter.as_mut().unwrap().selected = task_choice;
+
+    app.commit_backlink_filter().unwrap();
+
+    let view = app.backlinks.as_ref().unwrap();
+    assert_eq!(view.filter.as_deref(), Some("task"));
+    assert_eq!(view.selected, Some(0));
+    assert_eq!(view.contexts[0].last().unwrap().id, task.id);
+    assert!(view.contexts[0].iter().any(|node| node.id == meeting.id));
+}
+
+#[test]
+fn local_tag_changes_refresh_the_active_backlink_filter() {
+    let mut engine = Engine::open(":memory:").unwrap();
+    let target = engine.create_node(CreateNode::new("Target")).unwrap().node;
+    let source = {
+        let mut input = CreateNode::new("Follow up on [[Target]]");
+        input.parent_id = Some(target.id);
+        input.tags = vec!["task".into()];
+        engine.create_node(input).unwrap().node
+    };
+    let mut app = App::open_with_focus(engine, Some(target.id)).unwrap();
+    app.start_backlinks().unwrap();
+    app.open_backlink_filter();
+    app.backlink_filter.as_mut().unwrap().selected = 1;
+    app.commit_backlink_filter().unwrap();
+    assert_eq!(app.backlinks.as_ref().unwrap().contexts.len(), 1);
+
+    app.backlinks.as_mut().unwrap().selected = None;
+    app.selected = Some(source.id);
+    app.start_tag_prompt().unwrap();
+    app.tag_prompt.as_mut().unwrap().query = "task".into();
+    app.refresh_tag_prompt().unwrap();
+    app.commit_tag_prompt().unwrap();
+
+    let view = app.backlinks.as_ref().unwrap();
+    assert_eq!(view.filter.as_deref(), Some("task"));
+    assert!(view.contexts.is_empty());
+    assert_eq!(view.selected, None);
+}
+
+#[test]
+fn hidden_backlinks_can_be_revealed_temporarily() {
+    let (mut app, _, meeting, _) = contextual_backlink_app(false);
+    assert!(app.backlinks.is_none());
+
+    app.start_backlinks().unwrap();
+    let view = app.backlinks.as_ref().unwrap();
+    assert!(view.temporary);
+    assert_eq!(view.selected, Some(0));
+    assert_eq!(view.contexts[0].last().unwrap().id, meeting.id);
+
+    app.handle_backlink_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+        .unwrap();
+    assert!(app.backlinks.is_none());
 }
 
 #[test]
@@ -932,6 +1074,20 @@ fn lines_commands_request_persistent_presentation_changes() {
     assert_eq!(
         app.run_command(Command::LinesOn).unwrap(),
         Action::SetLines(true)
+    );
+}
+
+#[test]
+fn backlinks_commands_request_persistent_presentation_changes() {
+    let (mut app, _, _) = test_app();
+
+    assert_eq!(
+        app.run_command(Command::BacklinksOff).unwrap(),
+        Action::SetBacklinks(false)
+    );
+    assert_eq!(
+        app.run_command(Command::BacklinksOn).unwrap(),
+        Action::SetBacklinks(true)
     );
 }
 

@@ -1,6 +1,6 @@
 //! Transient state for bounded launchers and completion prompts.
 
-use vrac_engine::{Cursor, Node, NodeId};
+use vrac_engine::{BacklinkTag, Cursor, Node, NodeId};
 
 use super::commands::CommandEntry;
 use super::editor::char_to_byte;
@@ -43,8 +43,18 @@ pub(super) enum TagTarget {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct BacklinkView {
     pub(super) target_id: NodeId,
+    pub(super) tags: Vec<BacklinkTag>,
+    pub(super) filter: Option<String>,
     pub(super) contexts: Vec<Vec<Node>>,
     pub(super) next: Option<Cursor>,
+    pub(super) selected: Option<usize>,
+    pub(super) temporary: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BacklinkFilterPrompt {
+    pub(super) query: String,
+    pub(super) results: Vec<BacklinkTag>,
     pub(super) selected: usize,
 }
 

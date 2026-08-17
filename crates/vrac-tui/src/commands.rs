@@ -21,6 +21,8 @@ pub(super) enum Command {
     Redo,
     Tag,
     Backlinks,
+    BacklinksOn,
+    BacklinksOff,
     LinesOn,
     LinesOff,
     Sync,
@@ -129,7 +131,17 @@ pub(super) const COMMANDS: &[CommandEntry] = &[
     CommandEntry {
         command: Command::Backlinks,
         name: "backlinks",
-        hint: "show references to the selected bullet",
+        hint: "jump to contextual backlinks",
+    },
+    CommandEntry {
+        command: Command::BacklinksOn,
+        name: "backlinks on",
+        hint: "always show contextual backlinks",
+    },
+    CommandEntry {
+        command: Command::BacklinksOff,
+        name: "backlinks off",
+        hint: "hide contextual backlinks until requested",
     },
     CommandEntry {
         command: Command::LinesOn,
