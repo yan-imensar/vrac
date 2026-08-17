@@ -49,51 +49,28 @@ use ui::draw;
 #[cfg(test)]
 use ui::{display_lines, draw_inline_content, split_content, wrap_text};
 
-const USAGE: &str = "Usage: vrac-tui [workspace-folder]";
 const SYNC_INTERVAL: Duration = Duration::from_secs(2);
 const OUTLINE_INDENT: usize = 4;
 
-pub fn run() -> Result<(), Box<dyn Error>> {
-    let mut arguments = std::env::args_os().skip(1);
-    let argument = arguments.next();
-    if argument
-        .as_deref()
-        .is_some_and(|argument| argument == "--help" || argument == "-h")
-    {
-        println!("{USAGE}");
-        if let Some(directory) = dirs::data_local_dir() {
-            println!(
-                "\nThe first launch asks for a folder managed by iCloud, Syncthing, or another provider.\nVrac keeps its active SQLite database privately in {}.",
-                directory.join("vrac").display()
-            );
-        }
-        return Ok(());
-    }
-    if arguments.next().is_some() {
-        return Err(USAGE.into());
-    }
-
-    let data_directory = dirs::data_local_dir()
-        .map(|directory| directory.join("vrac"))
-        .ok_or("cannot determine the local application-data directory")?;
-    let mut folder = choose_workspace_folder(argument.map(PathBuf::from), &data_directory)?;
-    run_with_folder(&data_directory, &mut folder)
+/// Context supplied by the product binary when launching the terminal frontend.
+#[derive(Debug)]
+pub struct LaunchOptions {
+    pub data_directory: PathBuf,
+    pub workspace: WorkspaceSelection,
 }
 
-pub fn run_with_workspace(folder: Option<PathBuf>) -> Result<(), Box<dyn Error>> {
-    let data_directory = dirs::data_local_dir()
-        .map(|directory| directory.join("vrac"))
-        .ok_or("cannot determine the local application-data directory")?;
-    let mut folder = choose_workspace_folder(folder, &data_directory)?;
-    run_with_folder(&data_directory, &mut folder)
+/// How the terminal frontend chooses its initial workspace.
+#[derive(Debug)]
+pub enum WorkspaceSelection {
+    Remembered,
+    Folder(PathBuf),
+    Select,
 }
 
-pub fn run_with_workspace_picker() -> Result<(), Box<dyn Error>> {
-    let data_directory = dirs::data_local_dir()
-        .map(|directory| directory.join("vrac"))
-        .ok_or("cannot determine the local application-data directory")?;
-    let mut folder = pick_workspace_folder()?.ok_or("workspace selection was cancelled")?;
-    run_with_folder(&data_directory, &mut folder)
+/// Runs the terminal frontend with launch context resolved by the product.
+pub fn run(options: LaunchOptions) -> Result<(), Box<dyn Error>> {
+    let mut folder = choose_workspace_folder(options.workspace, &options.data_directory)?;
+    run_with_folder(&options.data_directory, &mut folder)
 }
 
 fn run_with_folder(data_directory: &Path, folder: &mut PathBuf) -> Result<(), Box<dyn Error>> {
@@ -212,18 +189,22 @@ fn run_workspace(
 }
 
 fn choose_workspace_folder(
-    argument: Option<PathBuf>,
+    selection: WorkspaceSelection,
     data_directory: &Path,
 ) -> Result<PathBuf, Box<dyn Error>> {
-    let (folder, may_create) = match argument {
-        Some(folder) => (folder, true),
-        None => match configured_folder(data_directory)? {
+    let (folder, may_create) = match selection {
+        WorkspaceSelection::Folder(folder) => (folder, true),
+        WorkspaceSelection::Remembered => match configured_folder(data_directory)? {
             Some(folder) => (folder, false),
             None => (
                 pick_workspace_folder()?.ok_or("workspace selection was cancelled")?,
                 false,
             ),
         },
+        WorkspaceSelection::Select => (
+            pick_workspace_folder()?.ok_or("workspace selection was cancelled")?,
+            false,
+        ),
     };
     let folder = expand_home(folder)?;
     let folder = if folder.is_absolute() {
@@ -235,7 +216,7 @@ fn choose_workspace_folder(
         std::fs::create_dir_all(&folder)?;
     } else if !folder.is_dir() {
         return Err(format!(
-            "the configured workspace folder is unavailable: {}\nRun `vrac workspace` or launch `vrac-tui` with another folder to select it.",
+            "the configured workspace folder is unavailable: {}\nRun `vrac workspace` or pass another folder to `vrac tui`.",
             folder.display()
         )
         .into());
@@ -2172,7 +2153,11 @@ mod tests {
         let folder = parent.path().join("vrac-workspace");
         std::fs::create_dir(&folder).unwrap();
         assert_eq!(
-            choose_workspace_folder(Some(folder.clone()), Path::new("unused")).unwrap(),
+            choose_workspace_folder(
+                WorkspaceSelection::Folder(folder.clone()),
+                Path::new("unused")
+            )
+            .unwrap(),
             folder.canonicalize().unwrap()
         );
     }
@@ -2184,7 +2169,7 @@ mod tests {
         let folder = parent.path().join("missing-workspace");
         remember_folder(data.path(), &folder).unwrap();
 
-        assert!(choose_workspace_folder(None, data.path()).is_err());
+        assert!(choose_workspace_folder(WorkspaceSelection::Remembered, data.path()).is_err());
         assert!(!folder.exists());
     }
 

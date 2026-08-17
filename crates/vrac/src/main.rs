@@ -28,7 +28,7 @@ Usage:
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments.is_empty() {
-        return tui_exit(vrac_tui::run_with_workspace(None));
+        return tui_exit(launch_tui(vrac_tui::WorkspaceSelection::Remembered));
     }
     if arguments[0] == "tui" {
         if arguments
@@ -46,16 +46,19 @@ fn main() -> ExitCode {
             eprintln!("error: tui accepts at most one workspace folder\n\n{USAGE}");
             return ExitCode::from(2);
         }
-        return tui_exit(vrac_tui::run_with_workspace(
-            arguments.get(1).map(Into::into),
-        ));
+        let workspace = arguments
+            .get(1)
+            .map_or(vrac_tui::WorkspaceSelection::Remembered, |folder| {
+                vrac_tui::WorkspaceSelection::Folder(folder.into())
+            });
+        return tui_exit(launch_tui(workspace));
     }
     if arguments[0] == "workspace" {
         if arguments.len() != 1 {
             eprintln!("error: workspace accepts no arguments\n\n{USAGE}");
             return ExitCode::from(2);
         }
-        return tui_exit(vrac_tui::run_with_workspace_picker());
+        return tui_exit(launch_tui(vrac_tui::WorkspaceSelection::Select));
     }
 
     match run(&arguments) {
@@ -69,6 +72,16 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn launch_tui(workspace: vrac_tui::WorkspaceSelection) -> Result<(), Box<dyn StdError>> {
+    let data_directory = dirs::data_local_dir()
+        .map(|directory| directory.join("vrac"))
+        .ok_or("cannot determine the local application-data directory")?;
+    vrac_tui::run(vrac_tui::LaunchOptions {
+        data_directory,
+        workspace,
+    })
 }
 
 fn tui_exit(result: Result<(), Box<dyn StdError>>) -> ExitCode {

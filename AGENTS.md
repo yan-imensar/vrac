@@ -29,9 +29,10 @@ A speed optimization must never silently weaken durability or integrity.
 - `vrac` is the public product package. Its binary opens the TUI or parses
   scriptable commands, composes the workspace and frontend crates, presents
   results, and selects exit codes.
-- `vrac-tui` is the terminal frontend. It owns terminal interaction, transient
-  view state, and rendering, but no workspace layout or synchronization
-  protocol details.
+- `vrac-tui` is a library terminal frontend, not a separate product binary. It
+  owns terminal interaction, transient view state, and rendering, but no
+  process argument parsing, platform application-data discovery, workspace
+  layout, or synchronization protocol details.
 - The CLI, TUI, and future interfaces contain no SQL or business rules.
 - The engine depends on no user interface, graphical framework, or network
   service.
