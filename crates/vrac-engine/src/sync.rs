@@ -9,10 +9,41 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use crate::content::reference_range_is_valid;
 use crate::db::Engine;
 use crate::nodes::{decode_id, node_id_bytes};
-use crate::{
-    CheckIssue, Error, OutgoingSyncPackage, Result, SYNC_DEVICE_ID_LENGTH, SyncApply, SyncDeviceId,
-    WorkspaceId,
-};
+use crate::{CheckIssue, Error, Result, SYNC_DEVICE_ID_LENGTH, SyncDeviceId, WorkspaceId};
+
+/// One immutable opaque package ready for a synchronization provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutgoingSyncPackage {
+    device_id: SyncDeviceId,
+    first_sequence: u64,
+    last_sequence: u64,
+    id: [u8; 32],
+    bytes: Vec<u8>,
+}
+
+impl OutgoingSyncPackage {
+    /// Stable filename suitable for an immutable provider object.
+    pub fn file_name(&self) -> String {
+        format!(
+            "{}-{:020}-{:020}.vrac-sync",
+            self.device_id, self.first_sequence, self.last_sequence
+        )
+    }
+
+    /// Complete opaque package bytes.
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+/// Outcome of importing one synchronization package.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SyncApply {
+    /// The package was applied atomically.
+    Applied,
+    /// The package was already represented by the local workspace.
+    AlreadyApplied,
+}
 
 const PACKAGE_MAGIC: &[u8; 8] = b"VRACSYNC";
 const PACKAGE_VERSION: u8 = 1;
