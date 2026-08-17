@@ -79,6 +79,8 @@ The first launch opens a terminal-native folder browser. Choose or create a
 folder for the workspace; the same flow works over SSH. Later launches reuse
 that selection. If the selected workspace can no longer be opened, Vrac shows
 the browser again and leaves its existing local and shared files untouched.
+Use `vrac --workspace <provider-folder>` to open an explicit provider folder,
+or `vrac workspace select` to reopen the browser.
 
 To build without installing:
 
@@ -169,21 +171,30 @@ using last-writer-wins.
 
 ## Command line
 
-The same `vrac` binary keeps bounded, scriptable engine commands:
+The product is terminal-first. It opens the remembered workspace by default,
+can open an explicit provider folder, or can ask for another one:
 
 ```text
-vrac init <file>
-vrac add <file> [--parent <id>] [--first|--last|--before <id>|--after <id>] <text>
-vrac node <file> <id>
-vrac children <file> [--parent <id>] [--limit <n>|--all]
-vrac set-text <file> <id> <text>
-vrac move <file> <id> [--parent <id>] [--first|--last|--before <id>|--after <id>]
-vrac check <file>
-vrac generate <file> --nodes <n> [--shape wide|deep|mixed]
+vrac
+vrac --workspace <provider-folder>
+vrac workspace select
 ```
 
-Launching `vrac` without arguments opens the TUI. `vrac tui [workspace-folder]`
-opens a specific workspace, and `vrac workspace` opens the folder selector.
+Bounded commands that operate directly on one local SQLite file are available
+under the explicit `db` namespace:
+
+```text
+vrac db init <file>
+vrac db add <file> [--parent <id>] [--first|--last|--before <id>|--after <id>] <text>
+vrac db node <file> <id>
+vrac db children <file> [--parent <id>] [--limit <n>|--all]
+vrac db set-text <file> <id> <text>
+vrac db move <file> <id> [--parent <id>] [--first|--last|--before <id>|--after <id>]
+vrac db check <file>
+```
+
+These are database maintenance and scripting commands, not the primary
+workspace interface. Run `vrac db --help` for the same command summary.
 
 ## Repository layout
 
@@ -215,7 +226,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 "Fast" is not decorative copy. The engine and TUI have reproducible
 five-million-node release scenarios, intentionally separate from ordinary
-correctness tests:
+correctness tests. The engine scenario creates its own performance database;
+data generation is deliberately not part of the installed command surface:
 
 ```sh
 cargo run --release -p vrac --example performance -- \

@@ -216,7 +216,7 @@ fn choose_workspace_folder(
         std::fs::create_dir_all(&folder)?;
     } else if !folder.is_dir() {
         return Err(format!(
-            "the configured workspace folder is unavailable: {}\nRun `vrac workspace` or pass another folder to `vrac tui`.",
+            "the configured workspace folder is unavailable: {}\nRun `vrac workspace select` or pass another folder with `vrac --workspace`.",
             folder.display()
         )
         .into());

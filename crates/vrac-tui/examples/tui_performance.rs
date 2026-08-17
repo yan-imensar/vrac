@@ -100,10 +100,10 @@ fn parse_path() -> Result<PathBuf, IoError> {
     let mut arguments = std::env::args_os().skip(1);
     let path = arguments
         .next()
-        .ok_or_else(|| input_error("usage: performance <checkpoint-or-workspace-folder>"))?;
+        .ok_or_else(|| input_error("usage: performance <checkpoint-or-provider-folder>"))?;
     if arguments.next().is_some() {
         return Err(input_error(
-            "usage: performance <checkpoint-or-workspace-folder>",
+            "usage: performance <checkpoint-or-provider-folder>",
         ));
     }
     Ok(path.into())

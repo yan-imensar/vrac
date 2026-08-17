@@ -22,7 +22,7 @@ pub(crate) fn choose_workspace_folder_with_status(
 ) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(
-            "workspace selection needs an interactive terminal; run `vrac tui <workspace-folder>` to select one non-interactively"
+            "workspace selection needs an interactive terminal; run `vrac --workspace <provider-folder>` to select one non-interactively"
                 .into(),
         );
     }
