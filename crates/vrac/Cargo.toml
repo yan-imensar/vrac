@@ -12,6 +12,7 @@ path = "src/main.rs"
 doc = false
 
 [dependencies]
+dirs = "6.0.0"
 vrac-engine = { path = "../vrac-engine", version = "0.1.0" }
 vrac-tui = { path = "../vrac-tui", version = "0.1.0" }
 

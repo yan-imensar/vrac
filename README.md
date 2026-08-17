@@ -190,13 +190,15 @@ opens a specific workspace, and `vrac workspace` opens the folder selector.
 ```text
 crates/vrac-engine      model, business rules, SQLite, and sync protocol
 crates/vrac-workspace   local DB lifecycle, provider layout, and sync rounds
-crates/vrac-tui         terminal interaction, transient view state, and rendering
+crates/vrac-tui         library terminal frontend, transient state, and rendering
 crates/vrac             public `vrac` binary and scriptable command routing
 ```
 
 The engine is synchronous and independent from every interface. Workspace
 orchestration is reusable by terminal and future frontends. The CLI and TUI
-contain no SQL, provider-format knowledge, or duplicated business rules.
+contain no SQL, provider-format knowledge, or duplicated business rules. The
+`vrac` package provides the only product executable and supplies launch context
+to the terminal frontend.
 
 The current workspace format is documented in [FORMAT.md](FORMAT.md). See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the branch, pull-request, and release
