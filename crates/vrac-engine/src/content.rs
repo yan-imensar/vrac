@@ -26,8 +26,8 @@ impl Engine {
     /// use vrac_engine::{CreateNode, Engine, ReferenceInput};
     ///
     /// let mut engine = Engine::open(":memory:")?;
-    /// let target = engine.create_node(CreateNode::new("Project X"))?;
-    /// let source = engine.create_node(CreateNode::new("Draft"))?;
+    /// let target = engine.create_node(CreateNode::new("Project X"))?.node;
+    /// let source = engine.create_node(CreateNode::new("Draft"))?.node;
     /// let text = "Point on [[Project X]]";
     /// let start = text.find("Project X").unwrap();
     /// engine.set_content(source.id, text.into(), vec![ReferenceInput {
@@ -74,16 +74,7 @@ impl Engine {
             self.history.record_group(history);
         }
         let references = self.node(id)?.ok_or(Error::NodeNotFound(id))?.references;
-        let materialized_nodes = materialized_ids
-            .into_iter()
-            .map(|id| {
-                self.node(id)?.ok_or_else(|| {
-                    Error::InvalidDatabase(
-                        "a materialized reference target could not be read".into(),
-                    )
-                })
-            })
-            .collect::<Result<_>>()?;
+        let materialized_nodes = read_materialized_nodes(self, materialized_ids)?;
         Ok(ContentUpdate {
             references,
             materialized_nodes,
@@ -175,6 +166,16 @@ impl Engine {
         }
         Ok(tags)
     }
+}
+
+pub(crate) fn read_materialized_nodes(engine: &Engine, ids: Vec<NodeId>) -> Result<Vec<Node>> {
+    ids.into_iter()
+        .map(|id| {
+            engine.node(id)?.ok_or_else(|| {
+                Error::InvalidDatabase("a materialized reference target could not be read".into())
+            })
+        })
+        .collect()
 }
 
 pub(crate) fn push_history_step(

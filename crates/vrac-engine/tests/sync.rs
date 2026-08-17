@@ -136,7 +136,8 @@ fn two_devices_exchange_complete_idempotent_product_changes() {
     let mut first = Engine::open_synced(&first_path, device(1)).expect("open first device");
     let project = first
         .create_node(CreateNode::new("Project X"))
-        .expect("create project");
+        .expect("create project")
+        .node;
     flush(&mut first);
     first
         .checkpoint(&second_path)
@@ -155,7 +156,7 @@ fn two_devices_exchange_complete_idempotent_product_changes() {
         label_end: 23,
         target_id: project.id,
     }];
-    let decision = first.create_node(decision).expect("create decision");
+    let decision = first.create_node(decision).expect("create decision").node;
 
     let package = first
         .next_sync_package()
@@ -195,7 +196,8 @@ fn synchronized_deletions_update_the_local_search_index() {
     let mut first = Engine::open_synced(&first_path, device(1)).unwrap();
     let node = first
         .create_node(CreateNode::new("Temporary searchable note"))
-        .unwrap();
+        .unwrap()
+        .node;
     flush(&mut first);
     first.checkpoint(&second_path).unwrap();
     let mut second = Engine::open_synced(&second_path, device(2)).unwrap();
@@ -216,7 +218,8 @@ fn reopening_a_synchronized_workspace_cannot_silently_disable_capture() {
     engine.checkpoint(&receiver_path).unwrap();
     let node = engine
         .create_node(CreateNode::new("Before reopen"))
-        .unwrap();
+        .unwrap()
+        .node;
     drop(engine);
 
     let mut engine = Engine::open(&path).unwrap();
@@ -281,7 +284,7 @@ fn packages_are_ordered_validated_and_workspace_scoped() {
     let second_path = directory.path().join("second.vrac");
     let other_path = directory.path().join("other.vrac");
     let mut first = Engine::open_synced(&first_path, device(1)).unwrap();
-    let node = first.create_node(CreateNode::new("Zero")).unwrap();
+    let node = first.create_node(CreateNode::new("Zero")).unwrap().node;
     flush(&mut first);
     first.checkpoint(&second_path).unwrap();
     let mut second = Engine::open_synced(&second_path, device(2)).unwrap();
@@ -365,7 +368,7 @@ fn a_cross_device_dependency_is_deferred_and_can_be_retried() {
     let third_path = directory.path().join("third.vrac");
     let checkpoint_path = directory.path().join("checkpoint.vrac");
     let mut first = Engine::open_synced(&first_path, device(1)).unwrap();
-    let root = first.create_node(CreateNode::new("Root")).unwrap();
+    let root = first.create_node(CreateNode::new("Root")).unwrap().node;
     flush(&mut first);
     first.checkpoint(&checkpoint_path).unwrap();
     std::fs::copy(&checkpoint_path, &second_path).unwrap();
@@ -375,7 +378,7 @@ fn a_cross_device_dependency_is_deferred_and_can_be_retried() {
 
     let mut input = CreateNode::new("Created on B");
     input.parent_id = Some(root.id);
-    let dependent = second.create_node(input).unwrap();
+    let dependent = second.create_node(input).unwrap().node;
     let from_second = flush(&mut second);
     assert_eq!(
         first.apply_sync_package(&from_second).unwrap(),
@@ -408,8 +411,8 @@ fn independent_edits_merge_while_row_conflicts_roll_back() {
     let first_path = directory.path().join("first.vrac");
     let second_path = directory.path().join("second.vrac");
     let mut first = Engine::open_synced(&first_path, device(1)).unwrap();
-    let left = first.create_node(CreateNode::new("Left")).unwrap();
-    let right = first.create_node(CreateNode::new("Right")).unwrap();
+    let left = first.create_node(CreateNode::new("Left")).unwrap().node;
+    let right = first.create_node(CreateNode::new("Right")).unwrap().node;
     flush(&mut first);
     first.checkpoint(&second_path).unwrap();
     let mut second = Engine::open_synced(&second_path, device(2)).unwrap();
@@ -443,8 +446,8 @@ fn a_cycle_created_only_by_merging_two_valid_moves_is_rejected() {
     let first_path = directory.path().join("first.vrac");
     let second_path = directory.path().join("second.vrac");
     let mut first = Engine::open_synced(&first_path, device(1)).unwrap();
-    let left = first.create_node(CreateNode::new("Left")).unwrap();
-    let right = first.create_node(CreateNode::new("Right")).unwrap();
+    let left = first.create_node(CreateNode::new("Left")).unwrap().node;
+    let right = first.create_node(CreateNode::new("Right")).unwrap().node;
     flush(&mut first);
     first.checkpoint(&second_path).unwrap();
     let mut second = Engine::open_synced(&second_path, device(2)).unwrap();
@@ -483,7 +486,8 @@ fn a_checkpoint_covers_pending_changes_without_losing_the_source_boundary() {
     let mut first = Engine::open_synced(&first_path, device(1)).unwrap();
     let node = first
         .create_node(CreateNode::new("In checkpoint 0"))
-        .unwrap();
+        .unwrap()
+        .node;
     for index in 1..=300 {
         first
             .set_text(node.id, format!("In checkpoint {index}"))
@@ -522,7 +526,10 @@ fn restoring_a_device_identity_continues_after_the_checkpoint_frontier() {
     let receiver_path = directory.path().join("receiver.vrac");
     let restored_path = directory.path().join("restored.vrac");
     let mut source = Engine::open_synced(&source_path, device(1)).unwrap();
-    let node = source.create_node(CreateNode::new("Checkpoint")).unwrap();
+    let node = source
+        .create_node(CreateNode::new("Checkpoint"))
+        .unwrap()
+        .node;
     source.checkpoint(&receiver_path).unwrap();
     std::fs::copy(&receiver_path, &restored_path).unwrap();
 
@@ -552,10 +559,12 @@ fn two_offline_devices_converge_through_an_immutable_provider_folder() {
     let mut first = Engine::open_synced(&first_path, device(1)).expect("open device A");
     let project = first
         .create_node(CreateNode::new("Project X"))
-        .expect("create project");
+        .expect("create project")
+        .node;
     let context = first
         .create_node(CreateNode::new("Context"))
-        .expect("create context");
+        .expect("create context")
+        .node;
     publish(&mut first, &provider);
     first.checkpoint(&checkpoint).expect("publish checkpoint");
     drop(first);
@@ -588,7 +597,8 @@ fn two_offline_devices_converge_through_an_immutable_provider_folder() {
     }];
     let decision = second
         .create_node(input)
-        .expect("create decision offline on B");
+        .expect("create decision offline on B")
+        .node;
     drop(second);
 
     let mut first = Engine::open_synced(&first_path, device(1)).expect("reopen device A");

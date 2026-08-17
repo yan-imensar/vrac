@@ -27,10 +27,12 @@ fn undo_and_redo_restore_complete_product_mutations() {
 
     let target = engine
         .create_node(CreateNode::new("Project X"))
-        .expect("create target");
+        .expect("create target")
+        .node;
     let source = engine
         .create_node(CreateNode::new("Draft"))
-        .expect("create source");
+        .expect("create source")
+        .node;
     let text = "Decision on [[Project X]]";
     engine
         .set_content(
@@ -87,7 +89,8 @@ fn history_is_bounded_session_local_and_new_writes_clear_redo() {
     let mut engine = Engine::open(&path).expect("open workspace");
     let node = engine
         .create_node(CreateNode::new("0"))
-        .expect("create node");
+        .expect("create node")
+        .node;
     for value in 1..=101 {
         engine
             .set_text(node.id, value.to_string())
@@ -116,7 +119,8 @@ fn creating_a_journal_day_preserves_undo_but_clears_redo() {
     let mut engine = Engine::open(":memory:").expect("open workspace");
     let node = engine
         .create_node(CreateNode::new("Original"))
-        .expect("create node");
+        .expect("create node")
+        .node;
     engine
         .set_text(node.id, "Edited".into())
         .expect("edit node");
@@ -140,7 +144,8 @@ fn no_op_edits_preserve_redo_and_oversized_edits_drop_history() {
     let mut engine = Engine::open(":memory:").expect("open workspace");
     let node = engine
         .create_node(CreateNode::new("Original"))
-        .expect("create node");
+        .expect("create node")
+        .node;
     engine
         .set_text(node.id, "Edited".into())
         .expect("edit node");
@@ -167,7 +172,8 @@ fn history_mutations_synchronize_and_remote_imports_clear_local_history() {
     let mut first = Engine::open_synced(&first_path, device(1)).expect("open first device");
     let node = first
         .create_node(CreateNode::new("Original"))
-        .expect("create node");
+        .expect("create node")
+        .node;
     flush(&mut first);
     first
         .checkpoint(&second_path)
@@ -209,7 +215,8 @@ fn deleting_referenced_content_can_be_redone_and_synchronized() {
     let mut first = Engine::open_synced(&first_path, device(1)).expect("open first device");
     let target = first
         .create_node(CreateNode::new("Target"))
-        .expect("create target");
+        .expect("create target")
+        .node;
     let text = "See [[Target]]";
     let mut source = CreateNode::new(text);
     source.references.push(ReferenceInput {
@@ -217,7 +224,7 @@ fn deleting_referenced_content_can_be_redone_and_synchronized() {
         label_end: 12,
         target_id: target.id,
     });
-    let source = first.create_node(source).expect("create source");
+    let source = first.create_node(source).expect("create source").node;
     flush(&mut first);
     first
         .checkpoint(&second_path)
@@ -247,7 +254,8 @@ fn pruning_a_detached_root_can_be_undone_redone_and_synchronized() {
     let mut first = Engine::open_synced(&first_path, device(1)).expect("open first device");
     let target = first
         .create_node(CreateNode::new("Target"))
-        .expect("create target");
+        .expect("create target")
+        .node;
     let text = "See [[Target]]";
     let mut source = CreateNode::new(text);
     source.references.push(ReferenceInput {
@@ -255,7 +263,7 @@ fn pruning_a_detached_root_can_be_undone_redone_and_synchronized() {
         label_end: 12,
         target_id: target.id,
     });
-    let source = first.create_node(source).expect("create source");
+    let source = first.create_node(source).expect("create source").node;
     flush(&mut first);
     first
         .checkpoint(&second_path)

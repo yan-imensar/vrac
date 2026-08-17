@@ -42,6 +42,7 @@ fn create_node(
             ..CreateNode::new(text)
         })
         .expect("create node")
+        .node
 }
 
 fn children(engine: &Engine, parent_id: Option<NodeId>) -> Vec<Node> {

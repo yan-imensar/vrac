@@ -207,8 +207,8 @@ fn command_add(arguments: &[String]) -> Result<ExitCode, CliError> {
     let mut input = CreateNode::new(text_parts.join(" "));
     input.parent_id = parent_id;
     input.placement = placement.unwrap_or_default();
-    let node = engine.create_node(input)?;
-    println!("{}", node.id);
+    let outcome = engine.create_node(input)?;
+    println!("{}", outcome.node.id);
     Ok(ExitCode::SUCCESS)
 }
 

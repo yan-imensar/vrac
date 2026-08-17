@@ -65,10 +65,10 @@ fn a_workspace_that_cannot_open_can_be_replaced_before_the_tui_starts() {
 
 fn test_app() -> (App, Node, Node) {
     let mut engine = Engine::open(":memory:").unwrap();
-    let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
+    let parent = engine.create_node(CreateNode::new("Parent")).unwrap().node;
     let mut child_input = CreateNode::new("Child");
     child_input.parent_id = Some(parent.id);
-    let child = engine.create_node(child_input).unwrap();
+    let child = engine.create_node(child_input).unwrap().node;
     (App::open_with_focus(engine, None).unwrap(), parent, child)
 }
 
@@ -222,7 +222,8 @@ fn visible_nodes_record_depth_without_sibling_dependent_guides() {
     let following = app
         .engine
         .create_node(CreateNode::new("Following"))
-        .unwrap();
+        .unwrap()
+        .node;
     app.reload_branch(None).unwrap();
     app.expand(parent.id).unwrap();
 
@@ -446,7 +447,8 @@ fn backlinks_open_the_matching_context() {
     let mut engine = Engine::open(":memory:").unwrap();
     let source = engine
         .create_node(CreateNode::new("See [[Target]]"))
-        .unwrap();
+        .unwrap()
+        .node;
     let target = source.references[0].target_id;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.selected = Some(target);
@@ -465,7 +467,8 @@ fn sync_reload_refreshes_an_open_backlink_view() {
     let mut engine = Engine::open(":memory:").unwrap();
     let source = engine
         .create_node(CreateNode::new("See [[Target]]"))
-        .unwrap();
+        .unwrap()
+        .node;
     let target = source.references[0].target_id;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.selected = Some(target);
@@ -555,8 +558,8 @@ fn sync_reload_preserves_loaded_pages() {
 #[test]
 fn indent_and_outdent_refresh_the_changed_parent() {
     let mut engine = Engine::open(":memory:").unwrap();
-    let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
-    let sibling = engine.create_node(CreateNode::new("Sibling")).unwrap();
+    let parent = engine.create_node(CreateNode::new("Parent")).unwrap().node;
+    let sibling = engine.create_node(CreateNode::new("Sibling")).unwrap().node;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.selected = Some(sibling.id);
 
@@ -608,7 +611,7 @@ fn editing_and_creation_go_through_the_engine() {
 #[test]
 fn creating_a_child_refreshes_and_expands_its_parent() {
     let mut engine = Engine::open(":memory:").unwrap();
-    let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
+    let parent = engine.create_node(CreateNode::new("Parent")).unwrap().node;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.selected = Some(parent.id);
     assert!(!app.selected_node().unwrap().has_children);
@@ -635,10 +638,10 @@ fn creating_a_child_refreshes_and_expands_its_parent() {
 #[test]
 fn removing_the_last_child_clears_parent_expansion_state() {
     let mut engine = Engine::open(":memory:").unwrap();
-    let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
+    let parent = engine.create_node(CreateNode::new("Parent")).unwrap().node;
     let mut child_input = CreateNode::new("Child");
     child_input.parent_id = Some(parent.id);
-    let child = engine.create_node(child_input).unwrap();
+    let child = engine.create_node(child_input).unwrap().node;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.expand(parent.id).unwrap();
     assert!(app.expanded.contains(&parent.id));
@@ -656,7 +659,7 @@ fn removing_the_last_child_clears_parent_expansion_state() {
 #[test]
 fn creating_a_nested_reference_refreshes_materialized_root_concepts() {
     let mut engine = Engine::open(":memory:").unwrap();
-    let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
+    let parent = engine.create_node(CreateNode::new("Parent")).unwrap().node;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.selected = Some(parent.id);
 
@@ -669,6 +672,39 @@ fn creating_a_nested_reference_refreshes_materialized_root_concepts() {
             .nodes
             .iter()
             .any(|node| node.text == "Concept")
+    );
+}
+
+#[test]
+fn creating_a_nested_date_reference_refreshes_the_open_journal() {
+    let mut engine = Engine::open(":memory:").unwrap();
+    let parent = engine.create_node(CreateNode::new("Parent")).unwrap().node;
+    let journal = engine
+        .children(None, Page::default())
+        .unwrap()
+        .nodes
+        .into_iter()
+        .find(|node| matches!(node.system, Some(vrac_engine::SystemNode::Journal)))
+        .unwrap();
+    let mut app = App::open_with_focus(engine, None).unwrap();
+    app.expand(journal.id).unwrap();
+    assert!(
+        app.branches[&Some(journal.id)]
+            .nodes
+            .iter()
+            .all(|node| node.text != "2030-01-01")
+    );
+
+    app.selected = Some(parent.id);
+    app.start_new_child().unwrap();
+    app.editor.as_mut().unwrap().text = "See [[2030-01-01]]".into();
+    app.commit_editor().unwrap();
+
+    assert!(
+        app.branches[&Some(journal.id)]
+            .nodes
+            .iter()
+            .any(|node| node.text == "2030-01-01")
     );
 }
 
@@ -696,8 +732,8 @@ fn enter_persists_and_continues_with_a_sibling_draft() {
 #[test]
 fn vertical_arrows_cross_inline_editor_boundaries() {
     let mut engine = Engine::open(":memory:").unwrap();
-    let first = engine.create_node(CreateNode::new("First")).unwrap();
-    let second = engine.create_node(CreateNode::new("Second")).unwrap();
+    let first = engine.create_node(CreateNode::new("First")).unwrap().node;
+    let second = engine.create_node(CreateNode::new("Second")).unwrap().node;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.selected = Some(first.id);
     app.start_edit();
@@ -817,13 +853,13 @@ fn repeated_relative_creation_does_not_load_extra_pages() {
 #[test]
 fn indenting_beyond_a_loaded_page_never_leaves_an_invisible_editor() {
     let mut engine = Engine::open(":memory:").unwrap();
-    let parent = engine.create_node(CreateNode::new("Parent")).unwrap();
+    let parent = engine.create_node(CreateNode::new("Parent")).unwrap().node;
     for index in 0..101 {
         let mut input = CreateNode::new(format!("Child {index:03}"));
         input.parent_id = Some(parent.id);
         engine.create_node(input).unwrap();
     }
-    let sibling = engine.create_node(CreateNode::new("Sibling")).unwrap();
+    let sibling = engine.create_node(CreateNode::new("Sibling")).unwrap().node;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.selected = Some(sibling.id);
     app.start_edit();
@@ -902,7 +938,11 @@ fn lines_commands_request_persistent_presentation_changes() {
 #[test]
 fn tab_and_backtab_move_a_node_without_leaving_inline_editing() {
     let (mut app, parent, _) = test_app();
-    let sibling = app.engine.create_node(CreateNode::new("Sibling")).unwrap();
+    let sibling = app
+        .engine
+        .create_node(CreateNode::new("Sibling"))
+        .unwrap()
+        .node;
     app.reload_branch(None).unwrap();
     app.selected = Some(sibling.id);
     app.start_edit();
@@ -1089,7 +1129,8 @@ fn editing_preserves_untouched_stable_references() {
     let mut engine = Engine::open(":memory:").unwrap();
     let source = engine
         .create_node(CreateNode::new("See [[Target]]"))
-        .unwrap();
+        .unwrap()
+        .node;
     let target = source.references[0].target_id;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.selected = Some(source.id);
@@ -1119,8 +1160,8 @@ fn editing_preserves_untouched_stable_references() {
 #[test]
 fn inline_reference_completion_keeps_the_selected_identity() {
     let mut engine = Engine::open(":memory:").unwrap();
-    let target = engine.create_node(CreateNode::new("Project")).unwrap();
-    let source = engine.create_node(CreateNode::new("See ")).unwrap();
+    let target = engine.create_node(CreateNode::new("Project")).unwrap().node;
+    let source = engine.create_node(CreateNode::new("See ")).unwrap().node;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.selected = Some(source.id);
     app.start_edit();
@@ -1148,8 +1189,8 @@ fn inline_reference_completion_keeps_the_selected_identity() {
 #[test]
 fn typing_or_pasting_closing_brackets_leaves_reference_completion() {
     let mut engine = Engine::open(":memory:").unwrap();
-    let typed_source = engine.create_node(CreateNode::new("Typed ")).unwrap();
-    let pasted_source = engine.create_node(CreateNode::new("Pasted ")).unwrap();
+    let typed_source = engine.create_node(CreateNode::new("Typed ")).unwrap().node;
+    let pasted_source = engine.create_node(CreateNode::new("Pasted ")).unwrap().node;
     let mut app = App::open_with_focus(engine, None).unwrap();
 
     app.selected = Some(typed_source.id);
@@ -1188,10 +1229,11 @@ fn typing_or_pasting_closing_brackets_leaves_reference_completion() {
 #[test]
 fn renaming_a_target_refreshes_loaded_references_without_rewriting_sources() {
     let mut engine = Engine::open(":memory:").unwrap();
-    let target = engine.create_node(CreateNode::new("Project")).unwrap();
+    let target = engine.create_node(CreateNode::new("Project")).unwrap().node;
     let source = engine
         .create_node(CreateNode::new("See [[Project]]"))
-        .unwrap();
+        .unwrap()
+        .node;
     let mut app = App::open_with_focus(engine, None).unwrap();
     app.selected = Some(target.id);
     app.start_edit();

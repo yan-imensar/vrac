@@ -9,7 +9,7 @@ fn create(
     let mut input = CreateNode::new(text);
     input.parent_id = parent_id;
     input.tags = tags.iter().map(|tag| (*tag).to_owned()).collect();
-    engine.create_node(input).expect("create node")
+    engine.create_node(input).expect("create node").node
 }
 
 #[test]

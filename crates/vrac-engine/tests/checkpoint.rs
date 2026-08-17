@@ -11,7 +11,10 @@ fn a_checkpoint_is_an_independent_valid_snapshot_of_an_open_workspace() {
 
     let mut target_input = CreateNode::new("Project X");
     target_input.tags = vec!["project".into()];
-    let target = engine.create_node(target_input).expect("create target");
+    let target = engine
+        .create_node(target_input)
+        .expect("create target")
+        .node;
     let text = "Decision about [[Project X]]";
     let start = text.find("Project X").expect("find reference label");
     let mut source_input = CreateNode::new(text);
@@ -21,7 +24,10 @@ fn a_checkpoint_is_an_independent_valid_snapshot_of_an_open_workspace() {
         label_end: start + "Project X".len(),
         target_id: target.id,
     }];
-    let source = engine.create_node(source_input).expect("create source");
+    let source = engine
+        .create_node(source_input)
+        .expect("create source")
+        .node;
 
     engine
         .checkpoint(&checkpoint_path)
@@ -31,7 +37,8 @@ fn a_checkpoint_is_an_independent_valid_snapshot_of_an_open_workspace() {
         .expect("change active workspace");
     let later = engine
         .create_node(CreateNode::new("Created later"))
-        .expect("create later node");
+        .expect("create later node")
+        .node;
 
     let checkpoint = Engine::open(&checkpoint_path).expect("open checkpoint");
     assert_eq!(
@@ -84,7 +91,8 @@ fn an_invalid_snapshot_is_not_published() {
     let mut engine = Engine::open(&source_path).expect("open source");
     let node = engine
         .create_node(CreateNode::new("Node"))
-        .expect("create node");
+        .expect("create node")
+        .node;
 
     let connection = Connection::open(&source_path).expect("open raw source");
     connection
@@ -117,7 +125,8 @@ fn a_checkpoint_is_not_published_when_the_search_index_has_drifted() {
     let mut engine = Engine::open(&source_path).expect("open source");
     let node = engine
         .create_node(CreateNode::new("Searchable text"))
-        .expect("create node");
+        .expect("create node")
+        .node;
 
     let connection = Connection::open(&source_path).expect("open raw source");
     let rowid: i64 = connection
@@ -153,7 +162,8 @@ fn restoring_a_checkpoint_is_atomic_and_keeps_the_replaced_state_recoverable() {
         Engine::open_synced(&source_path, SyncDeviceId::from_bytes([1; 16])).expect("open source");
     let original = engine
         .create_node(CreateNode::new("Original"))
-        .expect("create original node");
+        .expect("create original node")
+        .node;
     engine
         .checkpoint(&checkpoint_path)
         .expect("create checkpoint");
@@ -162,7 +172,8 @@ fn restoring_a_checkpoint_is_atomic_and_keeps_the_replaced_state_recoverable() {
         .expect("change original node");
     let later = engine
         .create_node(CreateNode::new("Created later"))
-        .expect("create later node");
+        .expect("create later node")
+        .node;
 
     engine
         .restore_checkpoint(&checkpoint_path, &recovery_path)
