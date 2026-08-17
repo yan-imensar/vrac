@@ -79,6 +79,40 @@ pub fn run_reference_scenario(path: &Path) -> Result<Engine, Box<dyn StdError>> 
     })?;
     record_budgeted("search_and_frame_p95", search_p95, INTERACTIVE_BUDGET)?;
 
+    let backlink_target = app
+        .engine
+        .search("updated performance", 8)?
+        .into_iter()
+        .find(|node| node.text == "Updated performance probe B")
+        .ok_or_else(|| IoError::other("the contextual backlink probe is missing"))?;
+    let contextual_backlinks_p95 = measure_p95(|| {
+        app.set_focus(Some(backlink_target.id))?;
+        render_frame(&mut app)?;
+        app.set_focus(None)?;
+        Ok(())
+    })?;
+    record_budgeted(
+        "contextual_backlinks_and_frame_p95",
+        contextual_backlinks_p95,
+        INTERACTIVE_BUDGET,
+    )?;
+
+    app.set_focus(Some(backlink_target.id))?;
+    app.backlinks
+        .as_mut()
+        .expect("the backlink target is focused")
+        .filter = Some("meeting".into());
+    let filtered_backlinks_p95 = measure_p95(|| {
+        app.refresh_backlinks()?;
+        render_frame(&mut app)
+    })?;
+    record_budgeted(
+        "filtered_backlinks_and_frame_p95",
+        filtered_backlinks_p95,
+        INTERACTIVE_BUDGET,
+    )?;
+    app.set_focus(None)?;
+
     let mut create_samples = Vec::with_capacity(SAMPLE_COUNT);
     for index in 0..SAMPLE_COUNT {
         let started = Instant::now();

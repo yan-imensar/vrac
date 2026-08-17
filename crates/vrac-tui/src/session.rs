@@ -93,7 +93,7 @@ pub(super) fn run_workspace(
 ) -> Result<SessionExit, Box<dyn Error>> {
     let initial_sync = opened.initial_sync;
     let workspace = opened.workspace;
-    let mut app = App::open_with_lines(opened.engine, config.lines)?;
+    let mut app = App::open_with_settings(opened.engine, config.lines, config.backlinks)?;
     if initial_sync.imported > 0 || initial_sync.published > 0 {
         app.status = format!(
             "Synced: {} received, {} sent",
@@ -129,6 +129,18 @@ pub(super) fn run_workspace(
                                 if enabled { "enabled" } else { "disabled" }
                             );
                         }
+                        Err(error) => app.status = format!("Config error: {error}"),
+                    },
+                    Ok(Action::SetBacklinks(enabled)) => match config.set_backlinks(enabled) {
+                        Ok(()) => match app.set_backlinks_visible(enabled) {
+                            Ok(()) => {
+                                app.status = format!(
+                                    "Contextual backlinks {}",
+                                    if enabled { "enabled" } else { "disabled" }
+                                );
+                            }
+                            Err(error) => app.status = error.to_string(),
+                        },
                         Err(error) => app.status = format!("Config error: {error}"),
                     },
                     Ok(Action::Continue) => {}

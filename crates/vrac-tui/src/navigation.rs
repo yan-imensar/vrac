@@ -19,6 +19,8 @@ impl App {
             .get(&focus)
             .and_then(|branch| branch.nodes.first())
             .map(|node| node.id);
+        self.backlink_filter = None;
+        self.refresh_contextual_backlinks(false)?;
         self.scroll = 0;
         Ok(())
     }
@@ -44,12 +46,35 @@ impl App {
     }
 
     pub(super) fn move_selection(&mut self, direction: isize) -> vrac_engine::Result<()> {
+        if self
+            .backlinks
+            .as_ref()
+            .is_some_and(|view| view.selected.is_some())
+        {
+            if direction < 0 {
+                let view = self.backlinks.as_mut().expect("backlinks are visible");
+                let selected = view.selected.expect("a backlink is selected");
+                view.selected = (selected > 0).then_some(selected.saturating_sub(1));
+            } else if direction > 0 {
+                self.load_more_backlinks_if_needed()?;
+                let view = self.backlinks.as_mut().expect("backlinks are visible");
+                let selected = view.selected.expect("a backlink is selected");
+                view.selected = Some((selected + 1).min(view.contexts.len().saturating_sub(1)));
+            }
+            return Ok(());
+        }
         if direction > 0 {
             self.load_next_page_at_selection()?;
         }
         let visible = self.visible_nodes();
         if visible.is_empty() {
             self.selected = None;
+            if direction > 0
+                && let Some(view) = &mut self.backlinks
+                && !view.contexts.is_empty()
+            {
+                view.selected = Some(0);
+            }
             return Ok(());
         }
         let current = self
@@ -60,15 +85,30 @@ impl App {
             .saturating_add_signed(direction)
             .min(visible.len().saturating_sub(1));
         self.selected = Some(visible[next].node.id);
+        if direction > 0
+            && next == current
+            && current + 1 == visible.len()
+            && let Some(view) = &mut self.backlinks
+            && !view.contexts.is_empty()
+        {
+            view.selected = Some(0);
+        }
         Ok(())
     }
 
     pub(super) fn move_selection_page(&mut self, direction: isize) -> vrac_engine::Result<()> {
         let step = direction.signum();
         for _ in 0..direction.unsigned_abs() {
-            let before = self.selected;
+            let before = (
+                self.selected,
+                self.backlinks.as_ref().and_then(|view| view.selected),
+            );
             self.move_selection(step)?;
-            if self.selected == before {
+            let after = (
+                self.selected,
+                self.backlinks.as_ref().and_then(|view| view.selected),
+            );
+            if after == before {
                 break;
             }
         }
@@ -91,6 +131,9 @@ impl App {
     }
 
     pub(super) fn select_edge(&mut self, last: bool) {
+        if let Some(view) = &mut self.backlinks {
+            view.selected = None;
+        }
         let visible = self.visible_nodes();
         self.selected = if last {
             visible.last().map(|item| item.node.id)

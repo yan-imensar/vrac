@@ -342,6 +342,7 @@ impl App {
             self.selected = Some(new_parent);
             self.status = "Indented outside the loaded page".into();
         }
+        self.refresh_backlinks()?;
         Ok(())
     }
 
@@ -376,6 +377,7 @@ impl App {
         }
         self.selected = Some(node.id);
         self.status = "Outdented".into();
+        self.refresh_backlinks()?;
         Ok(())
     }
 
@@ -446,6 +448,7 @@ impl App {
             .get(index.min(after.len().saturating_sub(1)))
             .map(|item| item.node.id);
         self.status = format!("Deleted {} node(s); subtree copied", outcome.deleted_nodes);
+        self.refresh_backlinks()?;
         Ok(())
     }
 
@@ -474,6 +477,7 @@ impl App {
         }
         self.selected = created.first().map(|node| node.id).or(parent_id);
         self.status = format!("Pasted {} subtree(s)", created.len());
+        self.refresh_backlinks()?;
         Ok(())
     }
 
@@ -516,6 +520,7 @@ impl App {
                         self.expanded.remove(&pruned);
                     }
                     self.update_cached_node(&updated);
+                    self.refresh_backlinks()?;
                     self.status = "Saved".into();
                     Ok(Some(updated))
                 }
@@ -578,6 +583,7 @@ impl App {
                     } else {
                         "Created outside the loaded page".into()
                     };
+                    self.refresh_backlinks()?;
                     Ok(Some(created))
                 }
             }
